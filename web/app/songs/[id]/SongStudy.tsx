@@ -31,6 +31,11 @@ export default function SongStudy({ song }: { song: Song }) {
   const [selected, setSelected] = useState(0);
   const [follow, setFollow] = useState(true);
   const [audioError, setAudioError] = useState<string | null>(null);
+  // Clip URLs known to exist on the server; others are generated on first play.
+  const [generated, setGenerated] = useState(
+    () => new Set(lines.flatMap((l) => (l.audioCached ?? []).map((speed) => l.audio![speed]))),
+  );
+  const [generating, setGenerating] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const listRef = useRef<HTMLOListElement>(null);
 
@@ -65,15 +70,27 @@ export default function SongStudy({ song }: { song: Song }) {
       pause();
       setAudioError(null);
       audioRef.current?.pause();
+      // Point the element straight at the route and call play() inside the click, so the
+      // browser keeps the user gesture even if the server spends seconds generating the clip.
       const audio = new Audio(src);
       audioRef.current = audio;
-      audio.addEventListener("error", () => setAudioError(`音檔載入失敗（${audio.error?.message || `code ${audio.error?.code}`}）`));
+      if (!generated.has(src)) setGenerating(src);
+      audio.addEventListener("playing", () => {
+        setGenerating((g) => (g === src ? null : g));
+        setGenerated((prev) => (prev.has(src) ? prev : new Set(prev).add(src)));
+      });
+      audio.addEventListener("error", async () => {
+        setGenerating((g) => (g === src ? null : g));
+        // <audio> can't read the error body; ask the route what went wrong.
+        const { error } = await fetch(`${src}?error=1`).then((r) => r.json()).catch(() => ({ error: null }));
+        if (audioRef.current === audio) setAudioError(error ?? "音檔載入失敗，請再試一次。");
+      });
       audio.play().catch((e: DOMException) => {
-        // AbortError just means a newer clip replaced this one.
-        if (e.name !== "AbortError") setAudioError(`無法播放：${e.name} ${e.message}`);
+        // AbortError: a newer clip replaced this one. NotSupportedError: reported by the error listener.
+        if (e.name !== "AbortError" && e.name !== "NotSupportedError") setAudioError(`無法播放：${e.name} ${e.message}`);
       });
     },
-    [lines, current, pause],
+    [lines, current, pause, generated],
   );
 
   const playOriginal = useCallback(
@@ -127,7 +144,8 @@ export default function SongStudy({ song }: { song: Song }) {
             ready={ready}
             onTeacher={playTeacher}
             audioError={audioError}
-            songId={song.id}
+            generated={generated}
+            generating={generating}
             onOriginal={() => playOriginal(current)}
             onPrev={() => go(-1)}
             onNext={() => go(1)}
@@ -202,13 +220,17 @@ function LineCard(props: {
   ready: boolean;
   onTeacher: (speed: "normal" | "slow") => void;
   audioError: string | null;
-  songId: string;
+  generated: Set<string>;
+  generating: string | null;
   onOriginal: () => void;
   onPrev: () => void;
   onNext: () => void;
 }) {
   const { line, index, total, language, ready } = props;
   const tokens = line.tokens ?? [];
+  const label = (speed: string, text: string) =>
+    line.audio && props.generating === line.audio[speed] ? "⏳ 生成中…" : text;
+  const uncached = line.audio ? Object.values(line.audio).filter((src) => !props.generated.has(src)).length : 0;
 
   return (
     <article className="rounded-xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
@@ -244,14 +266,14 @@ function LineCard(props: {
           disabled={!line.audio}
           className="rounded-full bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600 disabled:opacity-40"
         >
-          🔊 老師念
+          {label("normal", "🔊 老師念")}
         </button>
         <button
           onClick={() => props.onTeacher("slow")}
           disabled={!line.audio}
           className="rounded-full bg-amber-100 px-4 py-2 text-sm font-medium text-amber-900 hover:bg-amber-200 disabled:opacity-40 dark:bg-amber-900/40 dark:text-amber-100"
         >
-          🐢 慢速
+          {label("slow", "🐢 慢速")}
         </button>
         <button
           onClick={props.onOriginal}
@@ -267,12 +289,14 @@ function LineCard(props: {
         </p>
       )}
       {!line.audio && (
-        <div className="mt-3 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
-          這首歌還沒有老師示範音。在專案根目錄執行：
-          <code className="mt-1 block overflow-x-auto whitespace-nowrap font-mono text-xs">
-            uv run speak.py output/{props.songId}.annotated.json
-          </code>
-        </div>
+        <p className="mt-3 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+          這個語言還沒有老師聲音設定（config/teachers.json）。
+        </p>
+      )}
+      {uncached > 0 && (
+        <p className="mt-2 text-xs text-stone-500">
+          第一次播放會即時生成示範音（約 5 秒，每段用掉 1 次 TTS 額度），之後就直接播放。
+        </p>
       )}
 
       {tokens.length > 0 && (

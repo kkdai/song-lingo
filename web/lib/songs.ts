@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { SPEEDS, clipName, hasTeacher } from "@/lib/teachers";
 
 export const DATA_DIR = process.env.SONG_DATA_DIR ?? path.join(process.cwd(), "..", "output");
 
@@ -25,7 +26,10 @@ export type Line = {
   grammar_note?: string;
   pronunciation_tip?: string;
   needs_review?: boolean;
-  audio?: { normal: string; slow: string };
+  /** Teacher clip URLs per speed; generated on first request if not cached yet. */
+  audio?: Record<string, string>;
+  /** Speeds whose clip already exists on disk (plays instantly, no TTS request). */
+  audioCached?: string[];
 };
 
 export type Song = {
@@ -39,14 +43,14 @@ export type Song = {
 
 export type SongSummary = Pick<Song, "id" | "language" | "title_guess" | "artist_guess"> & {
   lineCount: number;
-  hasAudio: boolean;
+  hasTeacher: boolean;
 };
 
 export function isVideoId(id: string): boolean {
   return VIDEO_ID.test(id);
 }
 
-async function readSong(id: string): Promise<Song | null> {
+export async function readSong(id: string): Promise<Song | null> {
   try {
     const raw = await readFile(path.join(DATA_DIR, `${id}.annotated.json`), "utf8");
     return { id, ...JSON.parse(raw) };
@@ -72,22 +76,30 @@ export async function listSongs(): Promise<SongSummary[]> {
       title_guess,
       artist_guess,
       lineCount: lines.length,
-      hasAudio: lines.some((l) => l.audio),
+      hasTeacher: hasTeacher(language),
     }));
+}
+
+/** Unique line texts in first-seen order; a line's clip index is its position here (as in speak.py). */
+export function uniqueTexts(song: Song): string[] {
+  return [...new Set(song.lines.map((l) => l.text))];
 }
 
 export async function getSong(id: string): Promise<Song | null> {
   if (!isVideoId(id)) return null;
   const song = await readSong(id);
   if (!song) return null;
-  // speak.py stores local file paths; the browser fetches them through the audio route.
+  if (!hasTeacher(song.language)) {
+    for (const line of song.lines) delete line.audio;
+    return song;
+  }
+
+  const cached = new Set(await readdir(path.join(DATA_DIR, "audio", id)).catch(() => []));
+  const index = new Map(uniqueTexts(song).map((text, i) => [text, i]));
   for (const line of song.lines) {
-    if (line.audio) {
-      line.audio = {
-        normal: `/api/audio/${id}/${path.basename(line.audio.normal)}`,
-        slow: `/api/audio/${id}/${path.basename(line.audio.slow)}`,
-      };
-    }
+    const i = index.get(line.text)!;
+    line.audio = Object.fromEntries(SPEEDS.map((speed) => [speed, `/api/audio/${id}/${clipName(i, speed)}`]));
+    line.audioCached = SPEEDS.filter((speed) => cached.has(clipName(i, speed)));
   }
   return song;
 }

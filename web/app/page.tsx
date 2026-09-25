@@ -45,9 +45,9 @@ uv run speak.py output/<影片ID>.annotated.json`}
                     <span className="rounded-full bg-stone-100 px-2 py-0.5 text-stone-600 dark:bg-stone-800 dark:text-stone-300">
                       {song.lineCount} 句
                     </span>
-                    {song.hasAudio && (
+                    {song.hasTeacher && (
                       <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">
-                        🔊 有示範音
+                        🔊 老師示範
                       </span>
                     )}
                   </div>

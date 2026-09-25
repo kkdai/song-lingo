@@ -1,0 +1,24 @@
+{
+  "model": "gemini-3.8-flash-tts",
+  "teachers": {
+    "ja": {
+      "language_code": "ja-JP",
+      "display_name": "Song Lingo Japanese Teacher",
+      "description": "A warm, patient Japanese language teacher in her early 30s from Tokyo. Standard Japanese accent, clear articulation, gentle and encouraging, like reading aloud to a student."
+    },
+    "ko": {
+      "language_code": "ko-KR",
+      "display_name": "Song Lingo Korean Teacher",
+      "description": "A warm, patient Korean language teacher in her early 30s from Seoul. Standard Seoul accent, clear articulation, gentle and encouraging, like reading aloud to a student."
+    },
+    "en": {
+      "language_code": "en-US",
+      "display_name": "Song Lingo English Teacher",
+      "description": "A warm, patient English teacher in her early 30s with a neutral American accent. Clear articulation, gentle and encouraging, like reading aloud to a student."
+    }
+  },
+  "styles": {
+    "normal": "calm and clear, reading the line aloud at a natural pace like a teacher",
+    "slow": "speaking slowly and clearly, articulating every syllable for a beginner, with small pauses between words"
+  }
+}

@@ -3,8 +3,11 @@
 Usage:
     uv run speak.py output/<video_id>.annotated.json [--workers 4]
 
-Designs one "teacher" voice per language on first use (cached in output/voices.json),
-writes WAVs to output/audio/<video_id>/ and records their paths back into the annotated JSON.
+Pre-generates every clip in bulk. The web app also generates clips on demand the first time a
+line is played, so this is only needed to warm the cache (each clip costs one TTS request).
+
+Designs one "teacher" voice per language on first use (cached in output/voices.json) and
+writes WAVs to output/audio/<video_id>/<line index>_<normal|slow>.wav.
 """
 
 import argparse
@@ -19,43 +22,15 @@ from pathlib import Path
 from dotenv import load_dotenv
 from google import genai
 
-MODEL = "gemini-3.8-flash-tts"
+# Shared with the web app (web/lib/tts.ts).
+CONFIG = json.loads((Path(__file__).parent / "config" / "teachers.json").read_text())
+MODEL = CONFIG["model"]
+TEACHERS = CONFIG["teachers"]
+STYLES = CONFIG["styles"]
 # Without a timeout a stalled request blocks its worker forever.
 REQUEST_TIMEOUT_S = 60
 ATTEMPTS = 3
 VOICES_FILE = Path("output/voices.json")
-
-TEACHERS = {
-    "ja": dict(
-        language_code="ja-JP",
-        display_name="Song Lingo Japanese Teacher",
-        description=(
-            "A warm, patient Japanese language teacher in her early 30s from Tokyo. Standard "
-            "Japanese accent, clear articulation, gentle and encouraging, like reading aloud to a student."
-        ),
-    ),
-    "ko": dict(
-        language_code="ko-KR",
-        display_name="Song Lingo Korean Teacher",
-        description=(
-            "A warm, patient Korean language teacher in her early 30s from Seoul. Standard Seoul "
-            "accent, clear articulation, gentle and encouraging, like reading aloud to a student."
-        ),
-    ),
-    "en": dict(
-        language_code="en-US",
-        display_name="Song Lingo English Teacher",
-        description=(
-            "A warm, patient English teacher in her early 30s with a neutral American accent. "
-            "Clear articulation, gentle and encouraging, like reading aloud to a student."
-        ),
-    ),
-}
-
-STYLES = {
-    "normal": "calm and clear, reading the line aloud at a natural pace like a teacher",
-    "slow": "speaking slowly and clearly, articulating every syllable for a beginner, with small pauses between words",
-}
 
 
 def teacher_voice(client: genai.Client, language: str) -> str:
@@ -159,19 +134,6 @@ def main() -> None:
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         errors = [e for e in pool.map(run, todo) if e]
-
-    # Only link lines whose clips all exist, so the web app never offers a missing file.
-    audio_by_text = {}
-    for i, text in enumerate(unique_texts):
-        paths = {speed: audio_dir / f"{i:03d}_{speed}.wav" for speed in STYLES}
-        if all(p.exists() for p in paths.values()):
-            audio_by_text[text] = {speed: str(p) for speed, p in paths.items()}
-    for line in song["lines"]:
-        if line["text"] in audio_by_text:
-            line["audio"] = audio_by_text[line["text"]]
-        else:
-            line.pop("audio", None)
-    args.annotated.write_text(json.dumps(song, ensure_ascii=False, indent=2))
 
     print(f"generated: {len(todo) - len(errors)}  failed: {len(errors)}")
     for e in errors[:5]:

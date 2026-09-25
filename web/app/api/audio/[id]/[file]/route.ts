@@ -1,21 +1,34 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
 import type { NextRequest } from "next/server";
-import { DATA_DIR, isVideoId } from "@/lib/songs";
+import { isVideoId } from "@/lib/songs";
+import { CLIP_FILE } from "@/lib/teachers";
+import { TtsError, getClip } from "@/lib/tts";
 
-const CLIP_FILE = /^\d{3}_(normal|slow)\.wav$/;
+// Last generation failure per clip, so the page can explain an <audio> error
+// (media elements never expose the response body) without triggering another TTS request.
+const recentErrors = new Map<string, { status: number; message: string; at: number }>();
+const ERROR_TTL_MS = 60_000;
 
 export async function GET(request: NextRequest, ctx: RouteContext<"/api/audio/[id]/[file]">) {
   const { id, file } = await ctx.params;
   if (!isVideoId(id) || !CLIP_FILE.test(file)) {
-    return new Response("Not found", { status: 404 });
+    return Response.json({ error: "Not found" }, { status: 404 });
+  }
+  const key = `${id}/${file}`;
+
+  if (request.nextUrl.searchParams.has("error")) {
+    const last = recentErrors.get(key);
+    const fresh = last && Date.now() - last.at < ERROR_TTL_MS;
+    return Response.json({ error: fresh ? last.message : null }, { status: fresh ? last.status : 200 });
   }
 
   let data: Buffer;
   try {
-    data = await readFile(path.join(DATA_DIR, "audio", id, file));
-  } catch {
-    return new Response("Not found", { status: 404 });
+    data = await getClip(id, file);
+    recentErrors.delete(key);
+  } catch (e) {
+    if (!(e instanceof TtsError)) throw e;
+    recentErrors.set(key, { status: e.status, message: e.message, at: Date.now() });
+    return Response.json({ error: e.message }, { status: e.status });
   }
 
   const headers = {
