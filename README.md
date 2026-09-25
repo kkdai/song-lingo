@@ -27,4 +27,16 @@ grammar note, pronunciation tip, and romanization (Japanese: Hepburn from kana w
 Korean: Revised Romanization). Japanese lines whose readings disagree between the two Gemini passes
 are flagged `needs_review`. Writes `output/VIDEO_ID.annotated.json`.
 
+## Speak
+
+```bash
+uv run speak.py output/VIDEO_ID.annotated.json
+```
+
+Generates teacher read-aloud clips with `gemini-3.8-flash-tts` — a normal and a slow version of
+each unique line — into `output/audio/VIDEO_ID/`, and adds their paths to the annotated JSON.
+A "teacher" voice per language is created once via voice design and cached in `output/voices.json`
+(preview: `output/voice_preview_<lang>.wav`). Existing clips are skipped, so re-running only
+retries failures.
+
 Transcripts are for personal study and are git-ignored — lyrics are copyrighted, so don't commit or redistribute them.
