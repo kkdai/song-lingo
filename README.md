@@ -39,4 +39,18 @@ A "teacher" voice per language is created once via voice design and cached in `o
 (preview: `output/voice_preview_<lang>.wav`). Existing clips are skipped, so re-running only
 retries failures.
 
+## Web app
+
+```bash
+cd web
+npm install
+npm run dev   # http://localhost:3000
+```
+
+A Next.js app that reads songs from `../output/` (override with `SONG_DATA_DIR`). Each song page
+shows the MV (YouTube embed) next to a line-by-line study card: furigana, romanization, Chinese
+translation, word breakdown, grammar note, pronunciation tip, and teacher audio (normal / slow).
+Click a line to select it, double-click to play that line in the MV. Keys: ← → switch line,
+N / S teacher audio, R replay the original line.
+
 Transcripts are for personal study and are git-ignored — lyrics are copyrighted, so don't commit or redistribute them.
