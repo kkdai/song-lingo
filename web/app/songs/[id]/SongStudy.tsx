@@ -30,6 +30,7 @@ export default function SongStudy({ song }: { song: Song }) {
   const { containerRef, ready, time, playSegment, pause } = useYouTubePlayer(song.id);
   const [selected, setSelected] = useState(0);
   const [follow, setFollow] = useState(true);
+  const [audioError, setAudioError] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const listRef = useRef<HTMLOListElement>(null);
 
@@ -62,9 +63,15 @@ export default function SongStudy({ song }: { song: Song }) {
       const src = lines[current]?.audio?.[speed];
       if (!src) return;
       pause();
+      setAudioError(null);
       audioRef.current?.pause();
-      audioRef.current = new Audio(src);
-      audioRef.current.play();
+      const audio = new Audio(src);
+      audioRef.current = audio;
+      audio.addEventListener("error", () => setAudioError(`音檔載入失敗（${audio.error?.message || `code ${audio.error?.code}`}）`));
+      audio.play().catch((e: DOMException) => {
+        // AbortError just means a newer clip replaced this one.
+        if (e.name !== "AbortError") setAudioError(`無法播放：${e.name} ${e.message}`);
+      });
     },
     [lines, current, pause],
   );
@@ -119,6 +126,8 @@ export default function SongStudy({ song }: { song: Song }) {
             language={language}
             ready={ready}
             onTeacher={playTeacher}
+            audioError={audioError}
+            songId={song.id}
             onOriginal={() => playOriginal(current)}
             onPrev={() => go(-1)}
             onNext={() => go(1)}
@@ -192,6 +201,8 @@ function LineCard(props: {
   language: string;
   ready: boolean;
   onTeacher: (speed: "normal" | "slow") => void;
+  audioError: string | null;
+  songId: string;
   onOriginal: () => void;
   onPrev: () => void;
   onNext: () => void;
@@ -250,7 +261,19 @@ function LineCard(props: {
           🎵 原曲這句
         </button>
       </div>
-      {!line.audio && <p className="mt-2 text-xs text-stone-500">還沒有示範音，執行 speak.py 產生。</p>}
+      {props.audioError && (
+        <p className="mt-2 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+          {props.audioError}
+        </p>
+      )}
+      {!line.audio && (
+        <div className="mt-3 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+          這首歌還沒有老師示範音。在專案根目錄執行：
+          <code className="mt-1 block overflow-x-auto whitespace-nowrap font-mono text-xs">
+            uv run speak.py output/{props.songId}.annotated.json
+          </code>
+        </div>
+      )}
 
       {tokens.length > 0 && (
         <div className="mt-5">
