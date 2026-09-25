@@ -72,6 +72,7 @@ def transcribe(client: genai.Client, url: str, model: str) -> tuple[Transcript |
             response_mime_type="application/json",
             response_schema=Transcript,
             temperature=0.2,
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
         ),
     )
     finish = response.candidates[0].finish_reason if response.candidates else None
