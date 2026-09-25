@@ -11,6 +11,8 @@ import argparse
 import base64
 import json
 import sys
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -18,6 +20,9 @@ from dotenv import load_dotenv
 from google import genai
 
 MODEL = "gemini-3.8-flash-tts"
+# Without a timeout a stalled request blocks its worker forever.
+REQUEST_TIMEOUT_S = 60
+ATTEMPTS = 3
 VOICES_FILE = Path("output/voices.json")
 
 TEACHERS = {
@@ -96,6 +101,7 @@ def synthesize(client: genai.Client, voice_id: str, text: str, style: str) -> by
         }],
         response_format={"type": "audio"},
         generation_config={"speech_config": [{"voice": voice_id}]},
+        timeout=REQUEST_TIMEOUT_S,
     )
     return base64.b64decode(interaction.output_audio.data)
 
@@ -108,6 +114,8 @@ def main() -> None:
 
     load_dotenv()
     client = genai.Client()
+    # The SDK otherwise honors Retry-After, which for a daily quota means sleeping for hours.
+    client.interactions.sdk_configuration.retry_config.max_retries = 0
     song = json.loads(args.annotated.read_text())
     voice_id = teacher_voice(client, song["language"])
 
@@ -124,29 +132,53 @@ def main() -> None:
     todo = [job for job in jobs if not job[0].exists()]
     print(f"{len(unique_texts)} unique lines -> {len(jobs)} clips ({len(jobs) - len(todo)} cached, {len(todo)} to generate)")
 
+    done = 0
+    quota_exhausted = threading.Event()
+
     def run(job):
+        nonlocal done
         path, text, style = job
-        try:
-            path.write_bytes(synthesize(client, voice_id, text, style))
-            return None
-        except Exception as e:  # keep going; failed clips are retried on the next run
-            return f"{path.name}: {e}"
+        for attempt in range(1, ATTEMPTS + 1):
+            if quota_exhausted.is_set():
+                return f"{path.name}: skipped (daily quota exhausted)"
+            try:
+                path.write_bytes(synthesize(client, voice_id, text, style))
+                done += 1
+                print(f"[{done}/{len(todo)}] {path.name}", flush=True)
+                return None
+            except Exception as e:
+                if type(e).__name__ == "RateLimitError" and "per day" in str(e):
+                    if not quota_exhausted.is_set():
+                        quota_exhausted.set()
+                        print(f"Daily quota exhausted: {e}", flush=True)
+                    return f"{path.name}: skipped (daily quota exhausted)"
+                if attempt == ATTEMPTS:  # keep going; failed clips are retried on the next run
+                    return f"{path.name}: {type(e).__name__}: {e}"
+                print(f"retry {attempt}/{ATTEMPTS - 1} {path.name}: {type(e).__name__}", flush=True)
+                time.sleep(2**attempt)
 
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         errors = [e for e in pool.map(run, todo) if e]
 
-    audio_by_text = {
-        text: {speed: str(audio_dir / f"{i:03d}_{speed}.wav") for speed in STYLES}
-        for i, text in enumerate(unique_texts)
-    }
+    # Only link lines whose clips all exist, so the web app never offers a missing file.
+    audio_by_text = {}
+    for i, text in enumerate(unique_texts):
+        paths = {speed: audio_dir / f"{i:03d}_{speed}.wav" for speed in STYLES}
+        if all(p.exists() for p in paths.values()):
+            audio_by_text[text] = {speed: str(p) for speed, p in paths.items()}
     for line in song["lines"]:
-        line["audio"] = audio_by_text[line["text"]]
+        if line["text"] in audio_by_text:
+            line["audio"] = audio_by_text[line["text"]]
+        else:
+            line.pop("audio", None)
     args.annotated.write_text(json.dumps(song, ensure_ascii=False, indent=2))
 
     print(f"generated: {len(todo) - len(errors)}  failed: {len(errors)}")
     for e in errors[:5]:
         print(f"  {e}")
-    if errors:
+    if quota_exhausted.is_set():
+        print("Stopped early: daily TTS quota exhausted. Re-run after it resets; finished clips are kept.")
+    elif errors:
         print("Re-run to retry failed clips.")
     print(f"audio dir: {audio_dir}")
 
