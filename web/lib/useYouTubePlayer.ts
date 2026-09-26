@@ -37,6 +37,8 @@ export function useYouTubePlayer(videoId: string) {
   const stopAtRef = useRef<number | null>(null);
   const [ready, setReady] = useState(false);
   const [time, setTime] = useState(0);
+  /** YouTube player error code (101/150: embedding disabled, 100: removed or private). */
+  const [error, setError] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -47,7 +49,10 @@ export function useYouTubePlayer(videoId: string) {
         width: "100%",
         height: "100%",
         playerVars: { rel: 0, playsinline: 1, modestbranding: 1 },
-        events: { onReady: () => !cancelled && setReady(true) },
+        events: {
+          onReady: () => !cancelled && setReady(true),
+          onError: (e: { data: number }) => !cancelled && setError(e.data),
+        },
       });
     });
     return () => {
@@ -55,6 +60,7 @@ export function useYouTubePlayer(videoId: string) {
       playerRef.current?.destroy();
       playerRef.current = null;
       setReady(false);
+      setError(null);
     };
   }, [videoId]);
 
@@ -87,5 +93,5 @@ export function useYouTubePlayer(videoId: string) {
     playerRef.current?.pauseVideo();
   }, []);
 
-  return { containerRef, ready, time, playSegment, pause };
+  return { containerRef, ready, time, error, playSegment, pause };
 }

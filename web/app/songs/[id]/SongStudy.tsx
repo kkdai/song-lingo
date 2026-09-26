@@ -14,6 +14,53 @@ function toSeconds(timestamp: string): number {
   return m * 60 + s;
 }
 
+function youtubeUrl(videoId: string, seconds: number): string {
+  return `https://www.youtube.com/watch?v=${videoId}&t=${Math.floor(seconds)}s`;
+}
+
+const PLAYER_ERRORS: Record<number, string> = {
+  101: "影片擁有者不允許在其他網站播放這支影片。",
+  150: "影片擁有者不允許在其他網站播放這支影片。",
+  100: "找不到這支影片，可能已下架或設為私人。",
+  2: "影片網址無效。",
+  5: "瀏覽器無法播放這支影片。",
+};
+
+/** Shown over the player when YouTube refuses to play the video here. */
+function EmbedFallback({ videoId, code, start }: { videoId: string; code: number | null; start: number }) {
+  const [thumb, setThumb] = useState(`https://i.ytimg.com/vi/${videoId}/maxresdefault.jpg`);
+  return (
+    <div className="absolute inset-0">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={thumb}
+        alt=""
+        // maxresdefault doesn't exist for every video: YouTube then serves a 120x90 gray
+        // placeholder (or a 404), so fall back to hqdefault, which always exists.
+        onError={() => setThumb(`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`)}
+        onLoad={(e) => {
+          if (e.currentTarget.naturalWidth <= 120 && thumb.includes("maxres")) {
+            setThumb(`https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`);
+          }
+        }}
+        className="h-full w-full object-cover opacity-60"
+      />
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/40 p-4 text-center text-white">
+        <p className="text-sm">{PLAYER_ERRORS[code ?? 0] ?? "播放器載入失敗。"}</p>
+        <a
+          href={youtubeUrl(videoId, start)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="rounded-full bg-red-600 px-4 py-2 text-sm font-medium hover:bg-red-700"
+        >
+          ▶ 在 YouTube 開啟（從這句開始）
+        </a>
+        <p className="text-xs opacity-80">老師示範音與逐句教學仍可正常使用。</p>
+      </div>
+    </div>
+  );
+}
+
 /** A line the learner should double-check: flagged by the pipeline or edited since the last analysis. */
 function needsAttention(line: Line): boolean {
   return !line.reviewed && Boolean(line.needs_review || line.uncertain || line.stale);
@@ -34,7 +81,8 @@ function Word({ token }: { token: Token }) {
 
 export default function SongStudy({ song }: { song: Song }) {
   const { lines, language } = song;
-  const { containerRef, ready, time, playSegment, pause } = useYouTubePlayer(song.id);
+  const { containerRef, ready, time, error: playerError, playSegment, pause } = useYouTubePlayer(song.id);
+  const embedBlocked = playerError !== null;
   const [selected, setSelected] = useState(0);
   const [follow, setFollow] = useState(true);
   const [audioError, setAudioError] = useState<string | null>(null);
@@ -104,9 +152,13 @@ export default function SongStudy({ song }: { song: Song }) {
     (index: number) => {
       audioRef.current?.pause();
       setSelected(index);
+      if (embedBlocked) {
+        window.open(youtubeUrl(song.id, spans[index][0]), "_blank", "noopener");
+        return;
+      }
       playSegment(spans[index][0], spans[index][1] + 0.5);
     },
-    [playSegment, spans],
+    [playSegment, spans, embedBlocked, song.id],
   );
 
   const go = useCallback(
@@ -147,8 +199,11 @@ export default function SongStudy({ song }: { song: Song }) {
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <section className="flex flex-col gap-4 lg:sticky lg:top-4 lg:self-start">
-        <div className="aspect-video w-full overflow-hidden rounded-xl bg-black">
+        <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black">
           <div ref={containerRef} />
+          {embedBlocked && (
+            <EmbedFallback videoId={song.id} code={playerError} start={line ? spans[current][0] : 0} />
+          )}
         </div>
         {line && (
           <LineCard
@@ -165,6 +220,7 @@ export default function SongStudy({ song }: { song: Song }) {
             generated={generated}
             generating={generating}
             onOriginal={() => playOriginal(current)}
+            embedBlocked={embedBlocked}
             onPrev={() => go(-1)}
             onNext={() => go(1)}
           />
@@ -187,13 +243,14 @@ export default function SongStudy({ song }: { song: Song }) {
         <label className="mb-2 flex items-center gap-2 text-sm text-stone-500">
           <input
             type="checkbox"
-            checked={follow}
+            checked={follow && !embedBlocked}
+            disabled={embedBlocked}
             onChange={(e) => {
               if (!e.target.checked) setSelected(current);
               setFollow(e.target.checked);
             }}
           />
-          跟著 MV 自動切換歌詞
+          {embedBlocked ? "跟著 MV 自動切換歌詞（這支影片無法在頁面內播放）" : "跟著 MV 自動切換歌詞"}
         </label>
         <ol ref={listRef} className="flex flex-col gap-1 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto lg:pr-2">
           {lines.map((l, i) => {
@@ -290,6 +347,7 @@ function LineCard(props: {
   generated: Set<string>;
   generating: string | null;
   onOriginal: () => void;
+  embedBlocked: boolean;
   onPrev: () => void;
   onNext: () => void;
 }) {
@@ -387,10 +445,10 @@ function LineCard(props: {
         </button>
         <button
           onClick={props.onOriginal}
-          disabled={!ready}
+          disabled={!ready && !props.embedBlocked}
           className="rounded-full border border-stone-300 px-4 py-2 text-sm font-medium hover:bg-stone-100 disabled:opacity-40 dark:border-stone-700 dark:hover:bg-stone-800"
         >
-          🎵 原曲這句
+          {props.embedBlocked ? "🎵 在 YouTube 聽這句 ↗" : "🎵 原曲這句"}
         </button>
       </div>
       {props.audioError && (
