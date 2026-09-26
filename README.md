@@ -54,6 +54,10 @@ A Next.js app that reads songs from `../output/` (override with `SONG_DATA_DIR`)
 the repo-root `.env`. Each song page
 shows the MV (YouTube embed) next to a line-by-line study card: furigana, romanization, Chinese
 translation, word breakdown, grammar note, pronunciation tip, and teacher audio (normal / slow).
+Add songs from the **＋ 加入新歌** page: paste a YouTube URL and the app runs `transcribe.py` and
+`annotate.py` in the background (about 2 Gemini Flash requests, no TTS quota), then opens the song.
+If annotation fails after transcribing, adding the same URL again resumes from annotation.
+
 Click a line to select it, double-click to play that line in the MV. Keys: ← → switch line,
 N / S teacher audio, R replay the original line.
 

@@ -1,6 +1,6 @@
-import { execFile } from "node:child_process";
 import { readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { PipelineError, runScript } from "@/lib/pipeline";
 import { DATA_DIR, type Line, type Song } from "@/lib/songs";
 import { REPO_ROOT } from "@/lib/teachers";
 
@@ -123,15 +123,10 @@ export async function reannotate(videoId: string): Promise<string> {
   if (running.has(videoId)) throw new ReviewError(409, "這首歌正在重新分析中。");
   running.add(videoId);
   try {
-    const transcript = path.relative(REPO_ROOT, path.join(DATA_DIR, `${videoId}.json`));
-    return await new Promise((resolve, reject) => {
-      execFile("uv", ["run", "annotate.py", transcript], { cwd: REPO_ROOT, timeout: 180_000 }, (err, stdout, stderr) => {
-        // annotate.py prints only counts and file paths, never lyrics.
-        const summary = stdout.split("\n").filter((l) => /finish_reason|annotated:|review|cover/.test(l)).join("\n");
-        if (err) reject(new ReviewError(502, `重新分析失敗：${(stderr || err.message).split("\n").filter(Boolean).pop()}`));
-        else resolve(summary);
-      });
-    });
+    const stdout = await runScript("annotate.py", [path.relative(REPO_ROOT, path.join(DATA_DIR, `${videoId}.json`))]);
+    return stdout.split("\n").filter((l) => /finish_reason|annotated:|review|cover/.test(l)).join("\n");
+  } catch (e) {
+    throw e instanceof PipelineError ? new ReviewError(e.status, `重新分析失敗：${e.message}`) : e;
   } finally {
     running.delete(videoId);
   }

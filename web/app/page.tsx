@@ -9,17 +9,19 @@ export default async function Home() {
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10">
-      <h1 className="text-3xl font-bold">Song Lingo</h1>
-      <p className="mt-2 text-stone-500">用喜歡的歌學語言：逐句拼音、翻譯、文法，還有老師示範發音。</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-3xl font-bold">Song Lingo</h1>
+          <p className="mt-2 text-stone-500">用喜歡的歌學語言：逐句拼音、翻譯、文法，還有老師示範發音。</p>
+        </div>
+        <Link href="/add" className="rounded-full bg-amber-500 px-4 py-2 text-sm font-medium text-white hover:bg-amber-600">
+          ＋ 加入新歌
+        </Link>
+      </div>
 
       {songs.length === 0 ? (
         <div className="mt-8 rounded-xl border border-dashed border-stone-300 p-6 text-sm text-stone-500 dark:border-stone-700">
-          還沒有歌曲。在專案根目錄依序執行：
-          <pre className="mt-3 overflow-x-auto rounded bg-stone-100 p-3 text-xs dark:bg-stone-900">
-            {`uv run transcribe.py "<YouTube 網址>"
-uv run annotate.py output/<影片ID>.json
-uv run speak.py output/<影片ID>.annotated.json`}
-          </pre>
+          還沒有歌曲。按右上角「＋ 加入新歌」，貼上 MV 的 YouTube 網址就可以開始。
         </div>
       ) : (
         <ul className="mt-8 grid gap-3 sm:grid-cols-2">
