@@ -12,6 +12,8 @@ export class TtsError extends Error {
   constructor(
     public status: number,
     message: string,
+    /** For 429s: when the API says the quota frees up again. */
+    public retryAt?: number,
   ) {
     super(message);
   }
@@ -47,7 +49,11 @@ async function callApi(method: string, endpoint: string, body?: unknown) {
   if (!res.ok) {
     // Errors come back either as {error} or as [{error}].
     const message = (Array.isArray(json) ? json[0] : json)?.error?.message ?? res.statusText;
-    if (res.status === 429) throw new TtsError(429, `TTS 額度已用完：${message}`);
+    if (res.status === 429) {
+      const retryAfterS = Number(res.headers.get("retry-after"));
+      const retryAt = Number.isFinite(retryAfterS) && retryAfterS > 0 ? Date.now() + retryAfterS * 1000 : undefined;
+      throw new TtsError(429, `TTS 額度已用完：${message}`, retryAt);
+    }
     throw new TtsError(502, `Gemini 回傳錯誤 ${res.status}：${message}`);
   }
   return json;
@@ -116,12 +122,43 @@ async function synthesize(text: string, voice: string, style: string): Promise<B
     response_format: { type: "audio" },
     generation_config: { speech_config: [{ voice }] },
   });
-  const data = json.output_audio?.data ?? json.outputAudio?.data;
-  if (!data) throw new TtsError(502, "Gemini 沒有回傳音訊。");
+  const data = extractAudio(json);
+  if (!data) {
+    console.error("[tts] no audio in interactions response; top-level keys:", Object.keys(json ?? {}));
+    throw new TtsError(502, "Gemini 沒有回傳音訊。");
+  }
   return toWav(Buffer.from(data, "base64"));
 }
 
+type ContentItem = { type?: string; data?: string };
+
+/**
+ * Pull base64 audio out of an interactions response. The REST payload carries it in
+ * `steps[].content[]` (type "audio") of the last model_output steps, or in legacy `outputs[]`;
+ * `output_audio` is only a convenience field the Python SDK derives, mirrored here as a fallback.
+ */
+export function extractAudio(json: {
+  steps?: { type?: string; content?: ContentItem[] }[];
+  outputs?: ContentItem[];
+  output_audio?: ContentItem;
+}): string | undefined {
+  const fromContent = (content?: ContentItem[]) =>
+    Array.isArray(content) ? [...content].reverse().find((c) => c?.type === "audio" && c.data)?.data : undefined;
+  for (const step of [...(json.steps ?? [])].reverse()) {
+    if (step?.type === "user_input") break;
+    if (step?.type !== "model_output") continue;
+    const data = fromContent(step.content);
+    if (data) return data;
+  }
+  return fromContent(json.outputs) ?? json.output_audio?.data;
+}
+
 const pendingClips = new Map<string, Promise<Buffer>>();
+// A failed generation may still have been billed, so don't let repeated clicks or the
+// browser's parallel range requests retry it: replay the error for a while instead.
+const recentFailures = new Map<string, { error: TtsError; until: number }>();
+const FAILURE_TTL_MS = 60_000;
+let quotaError: TtsError | null = null;
 
 /** Return a teacher clip, generating and caching it on first request. */
 export async function getClip(videoId: string, file: string): Promise<Buffer> {
@@ -129,6 +166,10 @@ export async function getClip(videoId: string, file: string): Promise<Buffer> {
   if (!match) throw new TtsError(404, "Not found");
   const clipPath = path.join(DATA_DIR, "audio", videoId, file);
   if (existsSync(clipPath)) return readFile(clipPath);
+
+  if (quotaError && Date.now() < (quotaError.retryAt ?? 0)) throw quotaError;
+  const failure = recentFailures.get(clipPath);
+  if (failure && Date.now() < failure.until) throw failure.error;
 
   // Safari fires several range requests at once; share one generation between them.
   let pending = pendingClips.get(clipPath);
@@ -143,7 +184,13 @@ export async function getClip(videoId: string, file: string): Promise<Buffer> {
       await writeFile(`${clipPath}.tmp`, audio);
       await rename(`${clipPath}.tmp`, clipPath);
       return audio;
-    })().finally(() => pendingClips.delete(clipPath));
+    })()
+      .catch((e) => {
+        if (e instanceof TtsError && e.status === 429) quotaError = e;
+        else if (e instanceof TtsError) recentFailures.set(clipPath, { error: e, until: Date.now() + FAILURE_TTL_MS });
+        throw e;
+      })
+      .finally(() => pendingClips.delete(clipPath));
     pendingClips.set(clipPath, pending);
   }
   return pending;
