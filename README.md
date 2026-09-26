@@ -2,6 +2,9 @@
 
 **English** | [繁體中文](README_tw.md)
 
+<img width="1307" height="962" alt="Google Chrome 2026-09-26 12 13 29" src="https://github.com/user-attachments/assets/5d5971af-b842-485b-b1df-c910400b1263" />
+
+
 Learn a language through the songs you love. Paste a YouTube MV link, and Song Lingo transcribes the lyrics, adds romanization, translation and grammar notes, and gives you a teacher who reads every line aloud — at normal speed or slowly — so you can study the song one line at a time.
 
 > Lyrics are copyrighted. Song Lingo is a **personal study tool**: transcripts stay on your machine (or your private bucket), are git-ignored, and should never be committed or redistributed.
