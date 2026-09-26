@@ -90,9 +90,104 @@ web/                  Next.js app
 output/               your songs and audio (git-ignored)
 ```
 
-## Deployment
+## Deployment (Google Cloud Run, private to you)
 
-Deploying to Google Cloud Run — with audio and song data in a private Cloud Storage bucket and access restricted to a single Google account via Identity-Aware Proxy — is in progress.
+Song Lingo runs on Cloud Run as a single container: the Next.js app plus the uv-managed Python pipeline it calls. Everything is locked down so that only the Google accounts you list can use it — the page shows full lyrics and every generation spends your Gemini quota, so it should never be public.
+
+| Piece | Setup |
+|---|---|
+| Container | `Dockerfile` (Node 22 + uv/Python), built by Cloud Build from source |
+| Song data and audio | A private Cloud Storage bucket mounted at `/data` (`SONG_DATA_DIR`) |
+| API key | Secret Manager, exposed as `GEMINI_API_KEY` |
+| Access | Identity-Aware Proxy (IAP) in front, plus an in-app check of IAP's signed header |
+| Scaling | One instance (`--max-instances=1`), CPU always allocated so "add song" jobs finish in the background |
+
+Why a single instance: clip-generation dedupe, the quota back-off and add-song job status live in memory, and the bucket mount has no cross-instance locking. That's plenty for personal use.
+
+### Four layers of access control
+
+1. **Cloud Run IAM** — `--no-allow-unauthenticated`; only the IAP service agent may invoke the service.
+2. **IAP** — only accounts granted `roles/iap.httpsResourceAccessor` get through.
+3. **In-app check** — `web/proxy.ts` verifies the `x-goog-iap-jwt-assertion` header (ES256, issuer, audience) on every request and compares the email with `ALLOWED_EMAILS`. It only runs on Cloud Run (`K_SERVICE` is set) and **fails closed**: if `IAP_AUDIENCE` or `ALLOWED_EMAILS` is missing, every request gets a 500.
+4. **Private bucket** — public access prevention enforced; only the service's own service account can read or write it. Audio is streamed through the app, never via signed URLs.
+
+### Steps
+
+Replace `PROJECT_ID`, `PROJECT_NUMBER`, `REGION`, `BUCKET` and `you@gmail.com`.
+
+```bash
+# 1. Private bucket
+gcloud storage buckets create gs://BUCKET --project=PROJECT_ID --location=REGION \
+  --uniform-bucket-level-access --public-access-prevention
+
+# 2. A dedicated service account with bucket- and secret-scoped roles only
+gcloud iam service-accounts create song-lingo-run --project=PROJECT_ID
+SA=song-lingo-run@PROJECT_ID.iam.gserviceaccount.com
+gcloud storage buckets add-iam-policy-binding gs://BUCKET \
+  --member=serviceAccount:$SA --role=roles/storage.objectUser
+
+printf '%s' "$GEMINI_API_KEY" | gcloud secrets create song-lingo-gemini-api-key \
+  --project=PROJECT_ID --data-file=-
+gcloud secrets add-iam-policy-binding song-lingo-gemini-api-key --project=PROJECT_ID \
+  --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+
+# 3. (Optional) Upload songs you already have locally
+gcloud storage rsync output gs://BUCKET --recursive --exclude='.*\.tmp$'
+
+# 4. Build and deploy
+gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION \
+  --no-allow-unauthenticated --iap \
+  --service-account=$SA \
+  --set-secrets=GEMINI_API_KEY=song-lingo-gemini-api-key:latest \
+  --set-env-vars=ALLOWED_EMAILS=you@gmail.com,IAP_AUDIENCE=/projects/PROJECT_NUMBER/locations/REGION/services/song-lingo \
+  --max-instances=1 --min-instances=0 --no-cpu-throttling \
+  --execution-environment=gen2 --memory=1Gi --cpu=1 --timeout=600 \
+  --add-volume=name=data,type=cloud-storage,bucket=BUCKET \
+  --add-volume-mount=volume=data,mount-path=/data
+
+# 5. Let your account through IAP
+gcloud iap web add-iam-policy-binding --project=PROJECT_ID \
+  --member=user:you@gmail.com --role=roles/iap.httpsResourceAccessor \
+  --resource-type=cloud-run --region=REGION --service=song-lingo
+```
+
+`.gcloudignore` keeps `.env` and `output/` out of the Cloud Build upload; check with `gcloud meta list-files-for-upload .` before your first deploy.
+
+### Projects without an organization (personal Gmail)
+
+IAP's Google-managed OAuth client only works for accounts inside an organization. If your project has no organization (`gcloud projects describe PROJECT_ID --format='value(parent)'` prints nothing), IAP answers every request with `502 Empty Google Account OAuth client ID(s)/secret(s)` until you add your own OAuth client:
+
+1. **Google Auth Platform** (OAuth consent screen): audience **External**. If it's in *Testing*, add yourself as a test user. If it's already *In production* (for example shared with other apps in the project), leave it as is — IAP and the in-app check still decide who gets in.
+2. **APIs & Services → Credentials → Create OAuth client ID → Web application.** Add the redirect URI `https://iap.googleapis.com/v1/oauth/clientIds/CLIENT_ID:handleRedirect`.
+3. Attach it to the service (run this in your own terminal so the secret stays out of logs and chats):
+
+```bash
+cat > /tmp/iap-oauth.yaml <<'EOF'
+accessSettings:
+  oauthSettings:
+    clientId: CLIENT_ID
+    clientSecret: CLIENT_SECRET
+EOF
+gcloud iap settings set /tmp/iap-oauth.yaml --project=PROJECT_ID \
+  --resource-type=cloud-run --region=REGION --service=song-lingo > /dev/null
+rm /tmp/iap-oauth.yaml
+```
+
+### Verify it's private
+
+| Check | Expected |
+|---|---|
+| `curl -I https://SERVICE_URL/` | `302` to `accounts.google.com` (from IAP) |
+| Same with a forged `x-goog-iap-jwt-assertion` header | Still `302` — IAP doesn't accept assertions from outside |
+| `curl https://storage.googleapis.com/BUCKET/voices.json` | `403` |
+| `gcloud run services get-iam-policy song-lingo` | Only the IAP service agent, no `allUsers` |
+| Sign in with your account | App works |
+| Sign in with another Google account | "You don't have access" |
+| Logs for `[auth] rejected` | None for your own requests (a wrong `IAP_AUDIENCE` shows up here) |
+
+Also worth doing: restrict the API key to the Generative Language API, and set a billing budget alert.
+
+To redeploy after code changes, `gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION` reuses the existing settings. Note that the bucket and your local `output/` are separate copies; use `gcloud storage rsync` to move data between them.
 
 ## About the lyrics
 

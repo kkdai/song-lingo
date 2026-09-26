@@ -90,9 +90,104 @@ web/                  Next.js 網頁
 output/               你的歌曲與音檔（已被 git 忽略）
 ```
 
-## 部署
+## 部署（Google Cloud Run，只有你能使用）
 
-正在進行中：部署到 Google Cloud Run，歌曲資料和音檔放在私人的 Cloud Storage bucket，並用 Identity-Aware Proxy 限制只有指定的 Google 帳號能存取。
+Song Lingo 在 Cloud Run 上以單一容器執行，裡面包含 Next.js 網頁和它會呼叫的 Python 處理腳本（用 uv 管理）。整個服務都鎖起來，只有你指定的 Google 帳號能使用：頁面上有完整的歌詞，而且每次產生內容都會消耗你的 Gemini 額度，所以絕對不應該公開。
+
+| 部分 | 設定 |
+|---|---|
+| 容器 | `Dockerfile`（Node 22 + uv/Python），由 Cloud Build 從原始碼建置 |
+| 歌曲資料與音檔 | 私人的 Cloud Storage bucket，掛載到 `/data`（`SONG_DATA_DIR`） |
+| API key | 放在 Secret Manager，以 `GEMINI_API_KEY` 環境變數提供 |
+| 存取控制 | 前面是 Identity-Aware Proxy（IAP），程式內再驗證一次 IAP 的簽章 |
+| 執行個體 | 只有 1 個（`--max-instances=1`），CPU 持續分配，讓「加入新歌」的背景工作能跑完 |
+
+只用 1 個執行個體的原因：避免重複產生音檔、額度用完時暫停呼叫，以及加入新歌的進度，這些狀態都存在記憶體裡；掛載的 bucket 也沒有跨執行個體的鎖定機制。個人使用，1 個執行個體就足夠。
+
+### 四層存取控制
+
+1. **Cloud Run 權限**：`--no-allow-unauthenticated`，只有 IAP 的服務帳號能呼叫這個服務。
+2. **IAP**：只有被授予 `roles/iap.httpsResourceAccessor` 的帳號能通過。
+3. **程式內驗證**：`web/proxy.ts` 會在每個請求上驗證 `x-goog-iap-jwt-assertion` 標頭（ES256 簽章、issuer、audience），並比對 email 是否在 `ALLOWED_EMAILS` 裡。只在 Cloud Run 上啟用（偵測 `K_SERVICE` 環境變數），而且**設定漏掉時一律拒絕**：沒有設定 `IAP_AUDIENCE` 或 `ALLOWED_EMAILS` 時，所有請求都回傳 500。
+4. **私人 bucket**：強制禁止公開存取，只有這個服務專用的服務帳號能讀寫。音檔一律經過程式傳送，不使用簽署網址（signed URL）。
+
+### 步驟
+
+請把 `PROJECT_ID`、`PROJECT_NUMBER`、`REGION`、`BUCKET` 和 `you@gmail.com` 換成你自己的值。
+
+```bash
+# 1. 建立私人 bucket
+gcloud storage buckets create gs://BUCKET --project=PROJECT_ID --location=REGION \
+  --uniform-bucket-level-access --public-access-prevention
+
+# 2. 建立專用服務帳號，只授予這個 bucket 和這個 secret 的權限
+gcloud iam service-accounts create song-lingo-run --project=PROJECT_ID
+SA=song-lingo-run@PROJECT_ID.iam.gserviceaccount.com
+gcloud storage buckets add-iam-policy-binding gs://BUCKET \
+  --member=serviceAccount:$SA --role=roles/storage.objectUser
+
+printf '%s' "$GEMINI_API_KEY" | gcloud secrets create song-lingo-gemini-api-key \
+  --project=PROJECT_ID --data-file=-
+gcloud secrets add-iam-policy-binding song-lingo-gemini-api-key --project=PROJECT_ID \
+  --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
+
+# 3.（選用）上傳本機已經有的歌曲
+gcloud storage rsync output gs://BUCKET --recursive --exclude='.*\.tmp$'
+
+# 4. 建置並部署
+gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION \
+  --no-allow-unauthenticated --iap \
+  --service-account=$SA \
+  --set-secrets=GEMINI_API_KEY=song-lingo-gemini-api-key:latest \
+  --set-env-vars=ALLOWED_EMAILS=you@gmail.com,IAP_AUDIENCE=/projects/PROJECT_NUMBER/locations/REGION/services/song-lingo \
+  --max-instances=1 --min-instances=0 --no-cpu-throttling \
+  --execution-environment=gen2 --memory=1Gi --cpu=1 --timeout=600 \
+  --add-volume=name=data,type=cloud-storage,bucket=BUCKET \
+  --add-volume-mount=volume=data,mount-path=/data
+
+# 5. 允許你的帳號通過 IAP
+gcloud iap web add-iam-policy-binding --project=PROJECT_ID \
+  --member=user:you@gmail.com --role=roles/iap.httpsResourceAccessor \
+  --resource-type=cloud-run --region=REGION --service=song-lingo
+```
+
+`.gcloudignore` 會讓 `.env` 和 `output/` 不被上傳到 Cloud Build。第一次部署前，可以用 `gcloud meta list-files-for-upload .` 確認實際會上傳哪些檔案。
+
+### 不屬於組織的專案（個人 Gmail）
+
+IAP 預設的 OAuth client 只支援組織內的帳號。如果你的專案不屬於任何組織（`gcloud projects describe PROJECT_ID --format='value(parent)'` 沒有輸出），在你設定自己的 OAuth client 之前，IAP 會對所有請求回傳 `502 Empty Google Account OAuth client ID(s)/secret(s)`：
+
+1. **Google Auth Platform**（OAuth 同意畫面）：目標對象選 **External（外部）**。如果發布狀態是「測試中」，把自己加進測試使用者。如果已經是「正式版」（例如和專案裡的其他應用程式共用），維持原樣即可，決定誰能使用的是 IAP 和程式內的驗證。
+2. **API 和服務 → 憑證 → 建立 OAuth 用戶端 ID → 網頁應用程式**，並加入重新導向 URI `https://iap.googleapis.com/v1/oauth/clientIds/CLIENT_ID:handleRedirect`。
+3. 把它套用到這個服務。請在你自己的終端機執行，避免用戶端密鑰出現在 log 或對話紀錄裡：
+
+```bash
+cat > /tmp/iap-oauth.yaml <<'EOF'
+accessSettings:
+  oauthSettings:
+    clientId: CLIENT_ID
+    clientSecret: CLIENT_SECRET
+EOF
+gcloud iap settings set /tmp/iap-oauth.yaml --project=PROJECT_ID \
+  --resource-type=cloud-run --region=REGION --service=song-lingo > /dev/null
+rm /tmp/iap-oauth.yaml
+```
+
+### 確認只有你能存取
+
+| 檢查 | 預期結果 |
+|---|---|
+| `curl -I https://SERVICE_URL/` | IAP 回傳 `302`，導向 `accounts.google.com` |
+| 同上，但附上偽造的 `x-goog-iap-jwt-assertion` 標頭 | 一樣是 `302`，IAP 不接受外部帶進來的簽章 |
+| `curl https://storage.googleapis.com/BUCKET/voices.json` | `403` |
+| `gcloud run services get-iam-policy song-lingo` | 只有 IAP 的服務帳號，沒有 `allUsers` |
+| 用你的帳號登入 | 可以正常使用 |
+| 用其他 Google 帳號登入 | 顯示「You don't have access」 |
+| 在 log 裡搜尋 `[auth] rejected` | 你自己的請求不應該出現；如果 `IAP_AUDIENCE` 填錯，會在這裡看到 |
+
+另外也建議：把 API key 限制成只能呼叫 Generative Language API，並設定帳單的預算警示。
+
+修改程式後重新部署，執行 `gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION` 即可，其他設定都會沿用。要注意 bucket 和本機的 `output/` 是兩份各自獨立的資料，需要時可以用 `gcloud storage rsync` 在兩者之間同步。
 
 ## 關於歌詞
 
