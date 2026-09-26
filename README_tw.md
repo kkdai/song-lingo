@@ -4,7 +4,11 @@
 
 用你喜歡的歌學語言。貼上 YouTube MV 的網址，Song Lingo 會轉錄歌詞，加上拼音、中文翻譯和文法說明，還有一位老師用正常速度或慢速逐句念給你聽，讓你一句一句把整首歌學起來。
 
+<img width="1307" height="962" alt="Google Chrome 2026-09-26 12 13 29" src="https://github.com/user-attachments/assets/f6c5ce9d-d79e-4d9a-90f6-77178c7a181e" />
+
+
 > 歌詞受著作權保護。Song Lingo 是**個人學習工具**：轉錄的歌詞只存在你自己的電腦（或你私人的雲端儲存空間），已經被 git 忽略，請不要 commit 或散布。
+
 
 ## 主要功能
 
