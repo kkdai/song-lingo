@@ -1,0 +1,9 @@
+# Never upload secrets or lyrics to Cloud Build.
+.env
+output/
+.git/
+.venv/
+__pycache__/
+web/node_modules/
+web/.next/
+web/tsconfig.tsbuildinfo

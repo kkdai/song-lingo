@@ -1,0 +1,8 @@
+.git
+.env
+.venv
+__pycache__
+output
+web/node_modules
+web/.next
+web/tsconfig.tsbuildinfo
