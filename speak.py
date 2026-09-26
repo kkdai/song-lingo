@@ -7,11 +7,12 @@ Pre-generates every clip in bulk. The web app also generates clips on demand the
 line is played, so this is only needed to warm the cache (each clip costs one TTS request).
 
 Designs one "teacher" voice per language on first use (cached in output/voices.json) and
-writes WAVs to output/audio/<video_id>/<line index>_<normal|slow>.wav.
+writes WAVs to output/audio/<video_id>/<sha1(text)[:16]>_<normal|slow>.wav.
 """
 
 import argparse
 import base64
+import hashlib
 import json
 import sys
 import threading
@@ -31,6 +32,11 @@ STYLES = CONFIG["styles"]
 REQUEST_TIMEOUT_S = 60
 ATTEMPTS = 3
 VOICES_FILE = Path("output/voices.json")
+
+
+def clip_name(text: str, speed: str) -> str:
+    """Clips are keyed by line content so editing a lyric only invalidates that line's audio."""
+    return f"{hashlib.sha1(text.encode()).hexdigest()[:16]}_{speed}.wav"
 
 
 def teacher_voice(client: genai.Client, language: str) -> str:
@@ -100,8 +106,8 @@ def main() -> None:
 
     unique_texts = list(dict.fromkeys(line["text"] for line in song["lines"]))
     jobs = [
-        (audio_dir / f"{i:03d}_{speed}.wav", text, style)
-        for i, text in enumerate(unique_texts)
+        (audio_dir / clip_name(text, speed), text, style)
+        for text in unique_texts
         for speed, style in STYLES.items()
     ]
     todo = [job for job in jobs if not job[0].exists()]

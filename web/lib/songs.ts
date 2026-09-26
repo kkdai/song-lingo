@@ -26,6 +26,11 @@ export type Line = {
   grammar_note?: string;
   pronunciation_tip?: string;
   needs_review?: boolean;
+  /** Set by the review UI. */
+  reviewed?: boolean;
+  translation_zh_manual?: string;
+  /** Text or reading was edited; tokens/romanization are outdated until re-annotated. */
+  stale?: boolean;
   /** Teacher clip URLs per speed; generated on first request if not cached yet. */
   audio?: Record<string, string>;
   /** Speeds whose clip already exists on disk (plays instantly, no TTS request). */
@@ -80,11 +85,6 @@ export async function listSongs(): Promise<SongSummary[]> {
     }));
 }
 
-/** Unique line texts in first-seen order; a line's clip index is its position here (as in speak.py). */
-export function uniqueTexts(song: Song): string[] {
-  return [...new Set(song.lines.map((l) => l.text))];
-}
-
 export async function getSong(id: string): Promise<Song | null> {
   if (!isVideoId(id)) return null;
   const song = await readSong(id);
@@ -95,11 +95,9 @@ export async function getSong(id: string): Promise<Song | null> {
   }
 
   const cached = new Set(await readdir(path.join(DATA_DIR, "audio", id)).catch(() => []));
-  const index = new Map(uniqueTexts(song).map((text, i) => [text, i]));
   for (const line of song.lines) {
-    const i = index.get(line.text)!;
-    line.audio = Object.fromEntries(SPEEDS.map((speed) => [speed, `/api/audio/${id}/${clipName(i, speed)}`]));
-    line.audioCached = SPEEDS.filter((speed) => cached.has(clipName(i, speed)));
+    line.audio = Object.fromEntries(SPEEDS.map((speed) => [speed, `/api/audio/${id}/${clipName(line.text, speed)}`]));
+    line.audioCached = SPEEDS.filter((speed) => cached.has(clipName(line.text, speed)));
   }
   return song;
 }

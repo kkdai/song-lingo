@@ -1,15 +1,22 @@
 "use client";
 
+import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { POS_LABELS, SECTION_LABELS } from "@/lib/labels";
 import type { Line, Song, Token } from "@/lib/songs";
 import { useYouTubePlayer } from "@/lib/useYouTubePlayer";
+import ReviewForm, { saveEdit } from "./ReviewForm";
 
 const KANJI = /[一-鿿々]/;
 
 function toSeconds(timestamp: string): number {
   const [m, s] = timestamp.split(":").map(Number);
   return m * 60 + s;
+}
+
+/** A line the learner should double-check: flagged by the pipeline or edited since the last analysis. */
+function needsAttention(line: Line): boolean {
+  return !line.reviewed && Boolean(line.needs_review || line.uncertain || line.stale);
 }
 
 /** Word with furigana when its written form contains kanji. */
@@ -109,7 +116,7 @@ export default function SongStudy({ song }: { song: Song }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey) return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || e.metaKey || e.ctrlKey) return;
       const actions: Record<string, () => void> = {
         ArrowRight: () => go(1),
         ArrowLeft: () => go(-1),
@@ -128,6 +135,14 @@ export default function SongStudy({ song }: { song: Song }) {
   }, [go, playTeacher, playOriginal, current]);
 
   const line = lines[current];
+  const pendingCount = lines.filter(needsAttention).length;
+  const staleCount = lines.filter((l) => l.stale).length;
+
+  const nextPending = () => {
+    const order = [...lines.keys()].map((k) => (current + 1 + k) % lines.length);
+    const next = order.find((i) => needsAttention(lines[i]));
+    if (next !== undefined) pick(next);
+  };
 
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
@@ -137,6 +152,9 @@ export default function SongStudy({ song }: { song: Song }) {
         </div>
         {line && (
           <LineCard
+            key={current}
+            songId={song.id}
+            sameCount={lines.filter((l) => l.text === line.text).length}
             line={line}
             index={current}
             total={lines.length}
@@ -157,6 +175,15 @@ export default function SongStudy({ song }: { song: Song }) {
       </section>
 
       <section className="min-w-0">
+        {staleCount > 0 && <ReannotateBanner songId={song.id} staleCount={staleCount} />}
+        {pendingCount > 0 && (
+          <div className="mb-2 flex items-center justify-between rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+            <span>還有 {pendingCount} 句待校對</span>
+            <button onClick={nextPending} className="rounded px-2 py-0.5 font-medium hover:bg-rose-100 dark:hover:bg-rose-900/40">
+              下一句待校對 →
+            </button>
+          </div>
+        )}
         <label className="mb-2 flex items-center gap-2 text-sm text-stone-500">
           <input
             type="checkbox"
@@ -192,9 +219,14 @@ export default function SongStudy({ song }: { song: Song }) {
                     <div className="min-w-0">
                       <div className="text-lg leading-snug">
                         {l.text}
-                        {l.needs_review && (
-                          <span title="讀音可能有誤，請校對" className="ml-1 text-xs text-rose-500">
+                        {needsAttention(l) && (
+                          <span title="待校對" className="ml-1 text-xs text-rose-500">
                             ●
+                          </span>
+                        )}
+                        {l.reviewed && (
+                          <span title="已校對" className="ml-1 text-xs text-emerald-600">
+                            ✓
                           </span>
                         )}
                       </div>
@@ -212,7 +244,42 @@ export default function SongStudy({ song }: { song: Song }) {
   );
 }
 
+function ReannotateBanner({ songId, staleCount }: { songId: string; staleCount: number }) {
+  const router = useRouter();
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const run = async () => {
+    setRunning(true);
+    setError(null);
+    const res = await fetch(`/api/songs/${songId}/reannotate`, { method: "POST" });
+    const body = await res.json().catch(() => ({}));
+    setRunning(false);
+    if (!res.ok) return setError(body.error ?? `重新分析失敗（${res.status}）`);
+    router.refresh();
+  };
+
+  return (
+    <div className="mb-2 rounded-lg bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+      <div className="flex items-center justify-between gap-2">
+        <span>{staleCount} 句歌詞已修改，拼音與單字拆解還是舊的。</span>
+        <button
+          onClick={run}
+          disabled={running}
+          className="shrink-0 rounded-full bg-sky-600 px-3 py-1 font-medium text-white hover:bg-sky-700 disabled:opacity-50"
+        >
+          {running ? "分析中…（約 30 秒）" : "🔄 重新分析整首"}
+        </button>
+      </div>
+      <p className="mt-1 text-xs opacity-80">使用 1 次 Gemini Flash 請求，不佔 TTS 額度；手動修改的翻譯與校對標記會保留。</p>
+      {error && <p className="mt-1 text-rose-700 dark:text-rose-300">{error}</p>}
+    </div>
+  );
+}
+
 function LineCard(props: {
+  songId: string;
+  sameCount: number;
   line: Line;
   index: number;
   total: number;
@@ -228,6 +295,16 @@ function LineCard(props: {
 }) {
   const { line, index, total, language, ready } = props;
   const tokens = line.tokens ?? [];
+  const router = useRouter();
+  const [editing, setEditing] = useState(false);
+  const [confirmError, setConfirmError] = useState<string | null>(null);
+
+  const confirmOk = async () => {
+    setConfirmError(null);
+    const err = await saveEdit(props.songId, index, { reviewed: true, applyToSame: true });
+    if (err) setConfirmError(err);
+    else router.refresh();
+  };
   const label = (speed: string, text: string) =>
     line.audio && props.generating === line.audio[speed] ? "⏳ 生成中…" : text;
   const uncached = line.audio ? Object.values(line.audio).filter((src) => !props.generated.has(src)).length : 0;
@@ -237,8 +314,15 @@ function LineCard(props: {
       <div className="mb-3 flex items-center justify-between text-xs text-stone-500">
         <span>
           第 {index + 1} / {total} 句　{line.start}–{line.end}
+          {line.reviewed && <span className="ml-2 text-emerald-600">✓ 已校對</span>}
         </span>
         <div className="flex gap-1">
+          <button
+            onClick={() => setEditing((v) => !v)}
+            className={`rounded px-2 py-1 hover:bg-stone-100 dark:hover:bg-stone-800 ${editing ? "bg-stone-100 dark:bg-stone-800" : ""}`}
+          >
+            ✏️ 校對
+          </button>
           <button onClick={props.onPrev} disabled={index === 0} className="rounded px-2 py-1 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800">
             ← 上一句
           </button>
@@ -254,10 +338,36 @@ function LineCard(props: {
       {line.romanization && <p className="mt-1 text-stone-500">{line.romanization}</p>}
       {line.translation_zh && <p className="mt-2 text-lg">{line.translation_zh}</p>}
 
-      {(line.needs_review || line.uncertain) && (
-        <p className="mt-3 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
-          {line.uncertain ? "這句轉錄時聽不太清楚，" : "這句的漢字讀音兩次分析結果不一致，"}建議對照原曲或官方歌詞確認。
+      {line.stale && (
+        <p className="mt-3 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
+          這句已修改，拼音與單字拆解要等「重新分析」後才會更新。
         </p>
+      )}
+      {needsAttention(line) && !line.stale && (
+        <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+          <span>
+            {line.uncertain ? "這句轉錄時聽不太清楚，" : "這句的漢字讀音兩次分析結果不一致，"}建議對照原曲或官方歌詞確認。
+          </span>
+          <span className="flex gap-1">
+            <button onClick={confirmOk} className="rounded px-2 py-0.5 font-medium hover:bg-rose-100 dark:hover:bg-rose-900/40">
+              ✓ 沒問題
+            </button>
+            <button onClick={() => setEditing(true)} className="rounded px-2 py-0.5 font-medium hover:bg-rose-100 dark:hover:bg-rose-900/40">
+              ✏️ 修改
+            </button>
+          </span>
+          {confirmError && <span className="w-full">{confirmError}</span>}
+        </div>
+      )}
+      {editing && (
+        <ReviewForm
+          songId={props.songId}
+          index={index}
+          line={line}
+          language={language}
+          sameCount={props.sameCount}
+          onDone={() => setEditing(false)}
+        />
       )}
 
       <div className="mt-4 flex flex-wrap gap-2">

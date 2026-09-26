@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { DATA_DIR, readSong, uniqueTexts } from "@/lib/songs";
-import { CLIP_FILE, CONFIG, REPO_ROOT } from "@/lib/teachers";
+import { DATA_DIR, readSong } from "@/lib/songs";
+import { CLIP_FILE, CONFIG, REPO_ROOT, textHash } from "@/lib/teachers";
 
 const API = "https://generativelanguage.googleapis.com/v1beta";
 const REQUEST_TIMEOUT_MS = 60_000;
@@ -135,7 +135,7 @@ export async function getClip(videoId: string, file: string): Promise<Buffer> {
   if (!pending) {
     pending = (async () => {
       const song = await readSong(videoId);
-      const text = song && uniqueTexts(song)[Number(match[1])];
+      const text = song?.lines.find((l) => textHash(l.text) === match[1])?.text;
       if (!song || !text) throw new TtsError(404, "Not found");
       const voice = await teacherVoice(song.language);
       const audio = await synthesize(text, voice, CONFIG.styles[match[2]]);

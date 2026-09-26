@@ -176,6 +176,13 @@ def main() -> None:
 
     for line in lines:
         line.update(by_text.get(line["text"], {}))
+        # Keep what the user fixed in the review UI.
+        line.pop("stale", None)
+        if line.get("translation_zh_manual"):
+            line["translation_zh"] = line["translation_zh_manual"]
+        if line.get("reviewed"):
+            line["needs_review"] = False
+            line["uncertain"] = False
 
     out_file = args.transcript.with_suffix(".annotated.json")
     out_file.write_text(json.dumps(transcript, ensure_ascii=False, indent=2))
@@ -185,7 +192,7 @@ def main() -> None:
     if language in LANG_RULES:
         print(f"lines where tokens don't cover the text: {token_mismatch}")
     if language == "ja":
-        print(f"lines needing review (reading mismatch): {sum(e['needs_review'] for e in by_text.values())}")
+        print(f"lines needing review: {sum(bool(l.get('needs_review')) for l in lines)}")
     print(f"saved: {out_file}")
 
 

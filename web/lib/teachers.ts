@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
@@ -15,12 +16,17 @@ export const CONFIG: TeacherConfig = JSON.parse(
 );
 
 export const SPEEDS = Object.keys(CONFIG.styles);
-export const CLIP_FILE = new RegExp(`^(\\d{3})_(${SPEEDS.join("|")})\\.wav$`);
+export const CLIP_FILE = new RegExp(`^([0-9a-f]{16})_(${SPEEDS.join("|")})\\.wav$`);
 
 export function hasTeacher(language: string): boolean {
   return language in CONFIG.teachers;
 }
 
-export function clipName(index: number, speed: string): string {
-  return `${String(index).padStart(3, "0")}_${speed}.wav`;
+/** Clips are keyed by line content (same as speak.py), so editing a lyric only invalidates that line. */
+export function textHash(text: string): string {
+  return createHash("sha1").update(text).digest("hex").slice(0, 16);
+}
+
+export function clipName(text: string, speed: string): string {
+  return `${textHash(text)}_${speed}.wav`;
 }
