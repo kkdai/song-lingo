@@ -92,7 +92,7 @@ export default function SongStudy({ song }: { song: Song }) {
   );
   const [generating, setGenerating] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const listRef = useRef<HTMLOListElement>(null);
+  const [sheetOpen, setSheetOpen] = useState(false);
 
   const spans = useMemo(() => lines.map((l) => [toSeconds(l.start), toSeconds(l.end)] as const), [lines]);
 
@@ -106,12 +106,6 @@ export default function SongStudy({ song }: { song: Song }) {
 
   // While following the MV, show the line being sung; otherwise the one the user picked.
   const current = follow && playing !== null ? playing : selected;
-
-  useEffect(() => {
-    listRef.current
-      ?.querySelector(`[data-index="${current}"]`)
-      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [current]);
 
   const pick = useCallback((index: number) => {
     setFollow(false);
@@ -196,14 +190,34 @@ export default function SongStudy({ song }: { song: Song }) {
     if (next !== undefined) pick(next);
   };
 
+  const listProps = { lines, current, playing, onPick: pick, onPlayOriginal: playOriginal };
+  const listHeader = (
+    <ListHeader
+      songId={song.id}
+      staleCount={staleCount}
+      pendingCount={pendingCount}
+      onNextPending={nextPending}
+      follow={follow && !embedBlocked}
+      embedBlocked={embedBlocked}
+      onFollowChange={(on) => {
+        if (!on) setSelected(current);
+        setFollow(on);
+      }}
+    />
+  );
+
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+    // Mobile: MV pinned on top, the study card below it, controls in a bottom bar and the lyric list
+    // in a sheet. Desktop (lg): MV + card on the left, the full lyric list on the right.
+    <div className="grid gap-4 pb-36 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:gap-6 lg:pb-0">
       <section className="flex flex-col gap-4 lg:sticky lg:top-4 lg:self-start">
-        <div className="relative aspect-video w-full overflow-hidden rounded-xl bg-black">
-          <div ref={containerRef} />
-          {embedBlocked && (
-            <EmbedFallback videoId={song.id} code={playerError} start={line ? spans[current][0] : 0} />
-          )}
+        <div className="sticky top-0 z-20 -mx-4 bg-background pt-[env(safe-area-inset-top)] lg:static lg:mx-0 lg:pt-0">
+          <div className="relative aspect-video w-full overflow-hidden bg-black lg:rounded-xl">
+            <div ref={containerRef} />
+            {embedBlocked && (
+              <EmbedFallback videoId={song.id} code={playerError} start={line ? spans[current][0] : 0} />
+            )}
+          </div>
         </div>
         {line && (
           <LineCard
@@ -225,78 +239,237 @@ export default function SongStudy({ song }: { song: Song }) {
             onNext={() => go(1)}
           />
         )}
-        <p className="text-xs text-stone-500">
+        <p className="hidden text-xs text-stone-500 lg:block">
           快捷鍵：← → 上下句　N 老師正常速　S 老師慢速　R 原曲這句
         </p>
       </section>
 
-      <section className="min-w-0">
-        {staleCount > 0 && <ReannotateBanner songId={song.id} staleCount={staleCount} />}
-        {pendingCount > 0 && (
-          <div className="mb-2 flex items-center justify-between rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
-            <span>還有 {pendingCount} 句待校對</span>
-            <button onClick={nextPending} className="rounded px-2 py-0.5 font-medium hover:bg-rose-100 dark:hover:bg-rose-900/40">
-              下一句待校對 →
-            </button>
-          </div>
-        )}
-        <label className="mb-2 flex items-center gap-2 text-sm text-stone-500">
-          <input
-            type="checkbox"
-            checked={follow && !embedBlocked}
-            disabled={embedBlocked}
-            onChange={(e) => {
-              if (!e.target.checked) setSelected(current);
-              setFollow(e.target.checked);
+      <section className="hidden min-w-0 lg:block">
+        {listHeader}
+        <LyricList {...listProps} className="lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto lg:pr-2" />
+      </section>
+
+      {line && (
+        <MobileControls
+          line={line}
+          index={current}
+          total={lines.length}
+          ready={ready}
+          embedBlocked={embedBlocked}
+          generating={generating}
+          pendingCount={pendingCount}
+          onTeacher={playTeacher}
+          onOriginal={() => playOriginal(current)}
+          onPrev={() => go(-1)}
+          onNext={() => go(1)}
+          onOpenList={() => setSheetOpen(true)}
+        />
+      )}
+      {sheetOpen && (
+        <LyricSheet onClose={() => setSheetOpen(false)}>
+          {listHeader}
+          <LyricList
+            {...listProps}
+            onPick={(i) => {
+              pick(i);
+              setSheetOpen(false);
             }}
           />
-          {embedBlocked ? "跟著 MV 自動切換歌詞（這支影片無法在頁面內播放）" : "跟著 MV 自動切換歌詞"}
-        </label>
-        <ol ref={listRef} className="flex flex-col gap-1 lg:max-h-[calc(100vh-8rem)] lg:overflow-y-auto lg:pr-2">
-          {lines.map((l, i) => {
-            const newSection = l.section && l.section !== lines[i - 1]?.section;
-            return (
-              <li key={i} data-index={i}>
-                {newSection && (
-                  <div className="mb-1 mt-3 text-xs font-semibold uppercase tracking-wide text-stone-400">
-                    {SECTION_LABELS[l.section!] ?? l.section}
+        </LyricSheet>
+      )}
+    </div>
+  );
+}
+
+/** Stale/pending banners and the follow-the-MV toggle shown above the lyric list. */
+function ListHeader(props: {
+  songId: string;
+  staleCount: number;
+  pendingCount: number;
+  onNextPending: () => void;
+  follow: boolean;
+  embedBlocked: boolean;
+  onFollowChange: (on: boolean) => void;
+}) {
+  return (
+    <>
+      {props.staleCount > 0 && <ReannotateBanner songId={props.songId} staleCount={props.staleCount} />}
+      {props.pendingCount > 0 && (
+        <div className="mb-2 flex items-center justify-between rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
+          <span>還有 {props.pendingCount} 句待校對</span>
+          <button onClick={props.onNextPending} className="rounded px-2 py-0.5 font-medium hover:bg-rose-100 dark:hover:bg-rose-900/40">
+            下一句待校對 →
+          </button>
+        </div>
+      )}
+      <label className="mb-2 flex items-center gap-2 text-sm text-stone-500">
+        <input
+          type="checkbox"
+          checked={props.follow}
+          disabled={props.embedBlocked}
+          onChange={(e) => props.onFollowChange(e.target.checked)}
+        />
+        {props.embedBlocked ? "跟著 MV 自動切換歌詞（這支影片無法在頁面內播放）" : "跟著 MV 自動切換歌詞"}
+      </label>
+    </>
+  );
+}
+
+function LyricList(props: {
+  lines: Line[];
+  current: number;
+  playing: number | null;
+  onPick: (index: number) => void;
+  onPlayOriginal: (index: number) => void;
+  className?: string;
+}) {
+  const { lines, current, playing } = props;
+  const listRef = useRef<HTMLOListElement>(null);
+
+  useEffect(() => {
+    listRef.current
+      ?.querySelector(`[data-index="${current}"]`)
+      ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [current]);
+
+  return (
+    <ol ref={listRef} className={`flex flex-col gap-1 ${props.className ?? ""}`}>
+      {lines.map((l, i) => {
+        const newSection = l.section && l.section !== lines[i - 1]?.section;
+        return (
+          <li key={i} data-index={i}>
+            {newSection && (
+              <div className="mb-1 mt-3 text-xs font-semibold uppercase tracking-wide text-stone-400">
+                {SECTION_LABELS[l.section!] ?? l.section}
+              </div>
+            )}
+            <button
+              onClick={() => props.onPick(i)}
+              onDoubleClick={() => props.onPlayOriginal(i)}
+              className={`w-full rounded-lg px-3 py-2 text-left transition ${
+                i === current ? "bg-amber-100 dark:bg-amber-900/30" : "hover:bg-stone-100 dark:hover:bg-stone-900"
+              } ${i === playing ? "ring-2 ring-amber-400" : ""}`}
+            >
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 w-10 shrink-0 font-mono text-xs text-stone-400">{l.start}</span>
+                <div className="min-w-0">
+                  <div className="text-lg leading-snug">
+                    {l.text}
+                    {needsAttention(l) && (
+                      <span title="待校對" className="ml-1 text-xs text-rose-500">
+                        ●
+                      </span>
+                    )}
+                    {l.reviewed && (
+                      <span title="已校對" className="ml-1 text-xs text-emerald-600">
+                        ✓
+                      </span>
+                    )}
                   </div>
-                )}
-                <button
-                  onClick={() => pick(i)}
-                  onDoubleClick={() => playOriginal(i)}
-                  className={`w-full rounded-lg px-3 py-2 text-left transition ${
-                    i === current
-                      ? "bg-amber-100 dark:bg-amber-900/30"
-                      : "hover:bg-stone-100 dark:hover:bg-stone-900"
-                  } ${i === playing ? "ring-2 ring-amber-400" : ""}`}
-                >
-                  <div className="flex items-start gap-2">
-                    <span className="mt-0.5 w-10 shrink-0 font-mono text-xs text-stone-400">{l.start}</span>
-                    <div className="min-w-0">
-                      <div className="text-lg leading-snug">
-                        {l.text}
-                        {needsAttention(l) && (
-                          <span title="待校對" className="ml-1 text-xs text-rose-500">
-                            ●
-                          </span>
-                        )}
-                        {l.reviewed && (
-                          <span title="已校對" className="ml-1 text-xs text-emerald-600">
-                            ✓
-                          </span>
-                        )}
-                      </div>
-                      {l.romanization && <div className="text-xs text-stone-500">{l.romanization}</div>}
-                      {l.translation_zh && <div className="text-sm text-stone-600 dark:text-stone-400">{l.translation_zh}</div>}
-                    </div>
-                  </div>
-                </button>
-              </li>
-            );
-          })}
-        </ol>
-      </section>
+                  {l.romanization && <div className="text-xs text-stone-500">{l.romanization}</div>}
+                  {l.translation_zh && <div className="text-sm text-stone-600 dark:text-stone-400">{l.translation_zh}</div>}
+                </div>
+              </div>
+            </button>
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** Thumb-reachable playback and navigation bar pinned to the bottom of the screen on phones. */
+function MobileControls(props: {
+  line: Line;
+  index: number;
+  total: number;
+  ready: boolean;
+  embedBlocked: boolean;
+  generating: string | null;
+  pendingCount: number;
+  onTeacher: (speed: "normal" | "slow") => void;
+  onOriginal: () => void;
+  onPrev: () => void;
+  onNext: () => void;
+  onOpenList: () => void;
+}) {
+  const { line, index, total } = props;
+  const busy = (speed: string) => Boolean(line.audio && props.generating === line.audio[speed]);
+  const button =
+    "flex h-12 min-w-12 flex-1 flex-col items-center justify-center rounded-xl text-xs font-medium active:scale-95 disabled:opacity-40";
+
+  return (
+    <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-stone-200 bg-white/95 px-3 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur lg:hidden dark:border-stone-800 dark:bg-stone-950/95">
+      <div className="mb-2 flex items-center justify-between text-xs text-stone-500">
+        <span className="font-mono">
+          {index + 1} / {total}　{line.start}
+        </span>
+        <button onClick={props.onOpenList} className="h-11 rounded-full bg-stone-100 px-4 text-sm font-medium text-stone-700 dark:bg-stone-800 dark:text-stone-200">
+          📜 歌詞{props.pendingCount > 0 && <span className="ml-1 text-rose-500">●</span>}
+        </button>
+      </div>
+      <div className="flex gap-2">
+        <button onClick={props.onPrev} disabled={index === 0} aria-label="上一句" className={`${button} bg-stone-100 text-lg dark:bg-stone-800`}>
+          ‹
+        </button>
+        <button
+          onClick={() => props.onTeacher("normal")}
+          disabled={!line.audio}
+          className={`${button} flex-[1.4] bg-amber-500 text-white`}
+        >
+          <span className="text-lg">{busy("normal") ? "⏳" : "🔊"}</span>
+          {busy("normal") ? "生成中" : "老師念"}
+        </button>
+        <button
+          onClick={() => props.onTeacher("slow")}
+          disabled={!line.audio}
+          className={`${button} flex-[1.4] bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-100`}
+        >
+          <span className="text-lg">{busy("slow") ? "⏳" : "🐢"}</span>
+          {busy("slow") ? "生成中" : "慢速"}
+        </button>
+        <button
+          onClick={props.onOriginal}
+          disabled={!props.ready && !props.embedBlocked}
+          className={`${button} flex-[1.4] border border-stone-300 dark:border-stone-700`}
+        >
+          <span className="text-lg">🎵</span>
+          {props.embedBlocked ? "YouTube ↗" : "原曲"}
+        </button>
+        <button onClick={props.onNext} disabled={index === total - 1} aria-label="下一句" className={`${button} bg-stone-100 text-lg dark:bg-stone-800`}>
+          ›
+        </button>
+      </div>
+    </nav>
+  );
+}
+
+/** Bottom sheet holding the full lyric list on phones. */
+function LyricSheet({ onClose, children }: { onClose: () => void; children: React.ReactNode }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    // Keep the page behind the sheet from scrolling.
+    const overflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = overflow;
+    };
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-40 lg:hidden" role="dialog" aria-modal="true" aria-label="歌詞列表">
+      <button className="absolute inset-0 bg-black/40" aria-label="關閉" onClick={onClose} />
+      <div className="absolute inset-x-0 bottom-0 flex max-h-[80vh] flex-col rounded-t-2xl bg-white pb-[env(safe-area-inset-bottom)] dark:bg-stone-900">
+        <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3 dark:border-stone-800">
+          <span className="font-semibold">歌詞</span>
+          <button onClick={onClose} className="rounded-full px-3 py-1 text-sm text-stone-500 hover:bg-stone-100 dark:hover:bg-stone-800">
+            關閉
+          </button>
+        </div>
+        <div className="overflow-y-auto overscroll-contain px-3 py-2">{children}</div>
+      </div>
     </div>
   );
 }
@@ -356,6 +529,24 @@ function LineCard(props: {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [confirmError, setConfirmError] = useState<string | null>(null);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+
+  // Horizontal swipe on the card switches lines (phones). Ignored while the review form is open.
+  const onTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    touchStart.current = editing ? null : { x: t.clientX, y: t.clientY };
+  };
+  const onTouchEnd = (e: React.TouchEvent) => {
+    const start = touchStart.current;
+    touchStart.current = null;
+    if (!start) return;
+    const t = e.changedTouches[0];
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    if (dx < 0 && index < total - 1) props.onNext();
+    if (dx > 0 && index > 0) props.onPrev();
+  };
 
   const confirmOk = async () => {
     setConfirmError(null);
@@ -368,7 +559,11 @@ function LineCard(props: {
   const uncached = line.audio ? Object.values(line.audio).filter((src) => !props.generated.has(src)).length : 0;
 
   return (
-    <article className="rounded-xl border border-stone-200 bg-white p-5 dark:border-stone-800 dark:bg-stone-900">
+    <article
+      onTouchStart={onTouchStart}
+      onTouchEnd={onTouchEnd}
+      className="rounded-xl border border-stone-200 bg-white p-4 dark:border-stone-800 dark:bg-stone-900 lg:p-5"
+    >
       <div className="mb-3 flex items-center justify-between text-xs text-stone-500">
         <span>
           第 {index + 1} / {total} 句　{line.start}–{line.end}
@@ -381,20 +576,20 @@ function LineCard(props: {
           >
             ✏️ 校對
           </button>
-          <button onClick={props.onPrev} disabled={index === 0} className="rounded px-2 py-1 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800">
+          <button onClick={props.onPrev} disabled={index === 0} className="hidden rounded px-2 py-1 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 lg:inline-block">
             ← 上一句
           </button>
-          <button onClick={props.onNext} disabled={index === total - 1} className="rounded px-2 py-1 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800">
+          <button onClick={props.onNext} disabled={index === total - 1} className="hidden rounded px-2 py-1 hover:bg-stone-100 disabled:opacity-30 dark:hover:bg-stone-800 lg:inline-block">
             下一句 →
           </button>
         </div>
       </div>
 
-      <p className="text-2xl leading-loose">
+      <p className="text-[1.75rem] leading-loose lg:text-2xl">
         {language === "ja" && tokens.length > 0 ? tokens.map((t, i) => <Word key={i} token={t} />) : line.text}
       </p>
       {line.romanization && <p className="mt-1 text-stone-500">{line.romanization}</p>}
-      {line.translation_zh && <p className="mt-2 text-lg">{line.translation_zh}</p>}
+      {line.translation_zh && <p className="mt-2 text-xl lg:text-lg">{line.translation_zh}</p>}
 
       {line.stale && (
         <p className="mt-3 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
@@ -428,7 +623,7 @@ function LineCard(props: {
         />
       )}
 
-      <div className="mt-4 flex flex-wrap gap-2">
+      <div className="mt-4 hidden flex-wrap gap-2 lg:flex">
         <button
           onClick={() => props.onTeacher("normal")}
           disabled={!line.audio}
