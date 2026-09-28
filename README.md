@@ -15,6 +15,7 @@ Learn a language through the songs you love. Paste a YouTube MV link, and Song L
 - **Line-by-line study cards** — furigana over kanji, romanization, Traditional Chinese translation, a word-by-word breakdown (reading, part of speech, meaning), one grammar point and one pronunciation tip per line.
 - **A teacher who reads each line** — a voice designed from a text description with Gemini TTS, in a normal and a slow, clearly articulated version.
 - **Study alongside the MV** — the lyric list follows the video; replay just the current line of the original song.
+- **Shadowing** — record yourself reading the line; `gemini-3.5-transcribe` transcribes it and each word is marked as said, said differently, or missed (it checks whether the word is recognizable, not pitch accent or vowel length). Recordings are never stored.
 - **Review and correct** — lines likely to be wrong are flagged; fix the text, reading or translation in place, then re-analyze the song.
 - **Languages** — Japanese and Korean (with romanization) and English (with vocabulary and linking notes).
 

@@ -4,6 +4,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { POS_LABELS, SECTION_LABELS } from "@/lib/labels";
 import type { Line, Song, Token } from "@/lib/songs";
+import { type Recording, useRecorder } from "@/lib/useRecorder";
 import { useYouTubePlayer } from "@/lib/useYouTubePlayer";
 import ReviewForm, { saveEdit } from "./ReviewForm";
 
@@ -61,6 +62,28 @@ function EmbedFallback({ videoId, code, start }: { videoId: string; code: number
   );
 }
 
+export type ShadowResult = {
+  transcript: string;
+  score: number;
+  words: { surface: string; status: "ok" | "wrong" | "missing" }[];
+};
+
+/** One shadowing attempt on a line: recording → scoring → result (or error). */
+type Shadow = {
+  index: number;
+  status: "starting" | "recording" | "scoring" | "done" | "error";
+  result?: ShadowResult;
+  error?: string;
+  audioUrl?: string;
+};
+
+function micError(e: unknown): string {
+  const name = e instanceof DOMException ? e.name : "";
+  if (name === "NotAllowedError") return "麥克風權限被拒絕，請在瀏覽器設定裡允許這個網站使用麥克風。";
+  if (name === "NotFoundError") return "找不到麥克風。";
+  return e instanceof Error ? e.message : "無法開始錄音。";
+}
+
 /** A line the learner should double-check: flagged by the pipeline or edited since the last analysis. */
 function needsAttention(line: Line): boolean {
   return !line.reviewed && Boolean(line.needs_review || line.uncertain || line.stale);
@@ -93,6 +116,9 @@ export default function SongStudy({ song }: { song: Song }) {
   const [generating, setGenerating] = useState<string | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const [sheetOpen, setSheetOpen] = useState(false);
+  const [shadow, setShadow] = useState<Shadow | null>(null);
+  const recordingIndex = useRef(0);
+  const takeUrl = useRef<string | null>(null);
 
   const spans = useMemo(() => lines.map((l) => [toSeconds(l.start), toSeconds(l.end)] as const), [lines]);
 
@@ -154,6 +180,53 @@ export default function SongStudy({ song }: { song: Song }) {
     },
     [playSegment, spans, embedBlocked, song.id],
   );
+
+  const submitTake = useCallback(
+    async (index: number, take: Recording | null) => {
+      if (!take || take.ms < 500) {
+        setShadow({ index, status: "error", error: "錄音太短了，念完整句再按停止。" });
+        return;
+      }
+      if (takeUrl.current) URL.revokeObjectURL(takeUrl.current);
+      const audioUrl = (takeUrl.current = URL.createObjectURL(take.blob));
+      setShadow({ index, status: "scoring", audioUrl });
+      const form = new FormData();
+      form.append("audio", take.blob, "take");
+      const res = await fetch(`/api/songs/${song.id}/lines/${index}/shadow`, { method: "POST", body: form }).catch(() => null);
+      const body = await res?.json().catch(() => null);
+      if (res?.ok) setShadow({ index, status: "done", result: body, audioUrl });
+      else setShadow({ index, status: "error", error: body?.error ?? "評分失敗，請再試一次。", audioUrl });
+    },
+    [song.id],
+  );
+
+  const recorder = useRecorder((take) => submitTake(recordingIndex.current, take));
+
+  const toggleShadow = useCallback(async () => {
+    if (recorder.recording) {
+      submitTake(recordingIndex.current, await recorder.stop());
+      return;
+    }
+    pause();
+    audioRef.current?.pause();
+    recordingIndex.current = current;
+    // Only show "recording" once the mic is actually live: until then (e.g. the permission prompt
+    // is open) the button is disabled, so a second tap can't start a second getUserMedia.
+    setShadow({ index: current, status: "starting" });
+    try {
+      await recorder.start();
+      setShadow((s) => (s?.index === recordingIndex.current && s.status === "starting" ? { ...s, status: "recording" } : s));
+    } catch (e) {
+      setShadow({ index: current, status: "error", error: micError(e) });
+    }
+  }, [recorder, submitTake, pause, current]);
+
+  // Moving to another line mid-recording discards that take instead of scoring it.
+  useEffect(() => {
+    if (recorder.recording && recordingIndex.current !== current) recorder.stop().then(() => setShadow(null));
+  }, [current, recorder]);
+
+  useEffect(() => () => void (takeUrl.current && URL.revokeObjectURL(takeUrl.current)), []);
 
   const go = useCallback(
     (delta: number) => pick(Math.min(lines.length - 1, Math.max(0, current + delta))),
@@ -237,6 +310,8 @@ export default function SongStudy({ song }: { song: Song }) {
             embedBlocked={embedBlocked}
             onPrev={() => go(-1)}
             onNext={() => go(1)}
+            shadow={shadow?.index === current ? shadow : null}
+            onShadow={toggleShadow}
           />
         )}
         <p className="hidden text-xs text-stone-500 lg:block">
@@ -263,6 +338,8 @@ export default function SongStudy({ song }: { song: Song }) {
           onPrev={() => go(-1)}
           onNext={() => go(1)}
           onOpenList={() => setSheetOpen(true)}
+          shadowStatus={shadow?.index === current ? shadow.status : null}
+          onShadow={toggleShadow}
         />
       )}
       {sheetOpen && (
@@ -392,6 +469,8 @@ function MobileControls(props: {
   onPrev: () => void;
   onNext: () => void;
   onOpenList: () => void;
+  shadowStatus: Shadow["status"] | null;
+  onShadow: () => void;
 }) {
   const { line, index, total } = props;
   const busy = (speed: string) => Boolean(line.audio && props.generating === line.audio[speed]);
@@ -404,6 +483,7 @@ function MobileControls(props: {
         <span className="font-mono">
           {index + 1} / {total}　{line.start}
         </span>
+        <ShadowButton status={props.shadowStatus} onClick={props.onShadow} className="h-11 px-4 text-sm" />
         <button onClick={props.onOpenList} className="h-11 rounded-full bg-stone-100 px-4 text-sm font-medium text-stone-700 dark:bg-stone-800 dark:text-stone-200">
           📜 歌詞{props.pendingCount > 0 && <span className="ml-1 text-rose-500">●</span>}
         </button>
@@ -441,6 +521,75 @@ function MobileControls(props: {
         </button>
       </div>
     </nav>
+  );
+}
+
+function ShadowButton({ status, onClick, className }: { status: Shadow["status"] | null; onClick: () => void; className: string }) {
+  const recording = status === "recording";
+  return (
+    <button
+      onClick={onClick}
+      disabled={status === "scoring" || status === "starting"}
+      className={`rounded-full font-medium disabled:opacity-50 ${className} ${
+        recording ? "animate-pulse bg-rose-600 text-white" : "bg-stone-800 text-white dark:bg-stone-200 dark:text-stone-900"
+      }`}
+    >
+      {recording ? "■ 停止並評分" : status === "scoring" ? "評分中…" : status === "starting" ? "準備麥克風…" : "🎙 跟讀"}
+    </button>
+  );
+}
+
+const WORD_STYLES: Record<ShadowResult["words"][number]["status"], string> = {
+  ok: "bg-emerald-100 text-emerald-900 dark:bg-emerald-900/40 dark:text-emerald-100",
+  wrong: "bg-rose-100 text-rose-900 dark:bg-rose-900/40 dark:text-rose-100",
+  missing: "bg-stone-100 text-stone-400 line-through dark:bg-stone-800",
+};
+
+/** Progress and result of a shadowing attempt, shown on the study card. */
+function ShadowPanel({ shadow }: { shadow: Shadow }) {
+  const [playing, setPlaying] = useState(false);
+  const playTake = () => {
+    if (!shadow.audioUrl) return;
+    const audio = new Audio(shadow.audioUrl);
+    audio.onended = () => setPlaying(false);
+    setPlaying(true);
+    audio.play().catch(() => setPlaying(false));
+  };
+  const result = shadow.result;
+
+  return (
+    <div className="mt-4 rounded-lg border border-stone-200 p-3 text-sm dark:border-stone-700">
+      {shadow.status === "starting" && <p className="text-stone-500">正在開啟麥克風⋯⋯第一次使用時，請允許瀏覽器使用麥克風。</p>}
+      {shadow.status === "recording" && <p className="text-rose-600">🔴 錄音中⋯⋯念完這句後再按「停止並評分」。</p>}
+      {shadow.status === "scoring" && <p className="text-stone-500">評分中⋯⋯大約 10 秒。</p>}
+      {shadow.status === "error" && <p className="text-rose-700 dark:text-rose-300">{shadow.error}</p>}
+      {shadow.status === "done" && result && (
+        <>
+          <div className="flex items-baseline justify-between gap-2">
+            <span className="font-semibold text-stone-500">跟讀結果</span>
+            <span className={`text-2xl font-bold ${result.score >= 80 ? "text-emerald-600" : result.score >= 50 ? "text-amber-600" : "text-rose-600"}`}>
+              {result.score} 分
+            </span>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {result.words.map((w, i) => (
+              <span key={i} className={`rounded px-1.5 py-0.5 text-base ${WORD_STYLES[w.status]}`}>
+                {w.surface}
+              </span>
+            ))}
+          </div>
+          <p className="mt-2 text-stone-500">
+            你念的是：<span className="text-stone-800 dark:text-stone-200">{result.transcript}</span>
+          </p>
+          <p className="mt-1 text-xs text-stone-400">綠色：念對　紅色：念成別的詞　灰色：沒念到。只檢查聽不聽得出是哪個詞，音調與長短音不在評分範圍。</p>
+        </>
+      )}
+      {shadow.audioUrl && shadow.status !== "scoring" && (
+        <button onClick={playTake} disabled={playing} className="mt-2 rounded-full border border-stone-300 px-3 py-1 text-xs disabled:opacity-50 dark:border-stone-600">
+          {playing ? "播放中…" : "▶ 聽我的錄音"}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -523,6 +672,8 @@ function LineCard(props: {
   embedBlocked: boolean;
   onPrev: () => void;
   onNext: () => void;
+  shadow: Shadow | null;
+  onShadow: () => void;
 }) {
   const { line, index, total, language, ready } = props;
   const tokens = line.tokens ?? [];
@@ -590,6 +741,7 @@ function LineCard(props: {
       </p>
       {line.romanization && <p className="mt-1 text-stone-500">{line.romanization}</p>}
       {line.translation_zh && <p className="mt-2 text-xl lg:text-lg">{line.translation_zh}</p>}
+      {props.shadow && <ShadowPanel shadow={props.shadow} />}
 
       {line.stale && (
         <p className="mt-3 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">
@@ -645,6 +797,7 @@ function LineCard(props: {
         >
           {props.embedBlocked ? "🎵 在 YouTube 聽這句 ↗" : "🎵 原曲這句"}
         </button>
+        <ShadowButton status={props.shadow?.status ?? null} onClick={props.onShadow} className="px-4 py-2 text-sm" />
       </div>
       {props.audioError && (
         <p className="mt-2 rounded-md bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
