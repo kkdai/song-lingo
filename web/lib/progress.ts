@@ -1,25 +1,15 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { type LineProgress, type ShadowAttempt, withAttempt } from "@/lib/progressShared";
 import { DATA_DIR, type Line } from "@/lib/songs";
+import { textHash } from "@/lib/teachers";
 
-/** Attempts kept per line; older ones are dropped. */
-const MAX_ATTEMPTS = 20;
-
-export type ShadowAttempt = {
-  at: string;
-  score: number;
-  /** Words that weren't heard as written (for "words I keep missing"). */
-  missed: string[];
-};
-
-export type LineProgress = {
-  learned?: boolean;
-  shadow?: ShadowAttempt[];
-};
+export type { LineProgress, ShadowAttempt } from "@/lib/progressShared";
 
 /**
- * What the learner has done in one song. Lines are keyed by their text, like the teacher-audio
- * cache: repeated choruses share one entry, and an edit to a line's text carries its entry over.
+ * What the learner has done in one song. Lines are keyed by a hash of their text (`lineKey`), like
+ * the teacher-audio cache: repeated choruses share one entry, an edit to a line's text carries its
+ * entry over, and no lyrics are copied into the progress store.
  */
 export type Progress = {
   version: 1;
@@ -43,8 +33,22 @@ function progressFile(videoId: string): string {
   return path.join(DATA_DIR, "progress", `${videoId}.json`);
 }
 
+export const lineKey = textHash;
+const LINE_KEY = /^[0-9a-f]{16}$/;
+
 function withDefaults(data: Partial<Progress> | undefined): Progress {
-  return { ...emptyProgress(), ...data };
+  const progress = { ...emptyProgress(), ...data };
+  // Early versions keyed lines by their raw text; re-key those entries by hash.
+  for (const [key, value] of Object.entries(progress.lines)) {
+    if (LINE_KEY.test(key)) continue;
+    delete progress.lines[key];
+    const existing = progress.lines[lineKey(key)];
+    progress.lines[lineKey(key)] = {
+      ...(existing?.learned || value.learned ? { learned: true } : {}),
+      shadow: [...(existing?.shadow ?? []), ...(value.shadow ?? [])].sort((a, b) => a.at.localeCompare(b.at)),
+    };
+  }
+  return progress;
 }
 
 function stamp(progress: Progress, change: (p: Progress) => void): Progress {
@@ -63,11 +67,15 @@ type Store = {
 function fileStore(): Store {
   const queues = new Map<string, Promise<unknown>>();
   const read = async (videoId: string) => {
+    let raw: string;
     try {
-      return withDefaults(JSON.parse(await readFile(progressFile(videoId), "utf8")));
-    } catch {
-      return emptyProgress();
+      raw = await readFile(progressFile(videoId), "utf8");
+    } catch (e) {
+      // Only a missing file means "no progress yet"; any other failure must not be saved over.
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return emptyProgress();
+      throw e;
     }
+    return withDefaults(JSON.parse(raw));
   };
   return {
     read,
@@ -125,32 +133,29 @@ export async function updateProgress(videoId: string, change: (p: Progress) => v
   return (await getStore()).update(videoId, change);
 }
 
-function entry(progress: Progress, text: string): LineProgress {
-  return (progress.lines[text] ??= {});
-}
-
 export function setLearned(progress: Progress, text: string, learned: boolean) {
-  if (learned) entry(progress, text).learned = true;
-  else delete entry(progress, text).learned;
+  const entry = (progress.lines[lineKey(text)] ??= {});
+  if (learned) entry.learned = true;
+  else delete entry.learned;
 }
 
 export function addAttempt(progress: Progress, text: string, attempt: ShadowAttempt) {
-  const e = entry(progress, text);
-  e.shadow = [...(e.shadow ?? []), attempt].slice(-MAX_ATTEMPTS);
+  progress.lines[lineKey(text)] = withAttempt(progress.lines[lineKey(text)], attempt);
 }
 
 /** Carry a line's progress over when the review UI changes its text. */
 export async function renameLine(videoId: string, from: string, to: string) {
-  if (from === to || !(await readProgress(videoId)).lines[from]) return;
+  const [fromKey, toKey] = [lineKey(from), lineKey(to)];
+  if (fromKey === toKey || !(await readProgress(videoId)).lines[fromKey]) return;
   await updateProgress(videoId, (p) => {
     // Keep the old entry too: other lines with the old text may not have been edited.
-    if (p.lines[from] && !p.lines[to]) p.lines[to] = structuredClone(p.lines[from]);
+    if (p.lines[fromKey] && !p.lines[toKey]) p.lines[toKey] = structuredClone(p.lines[fromKey]);
   });
 }
 
 export function summarize(progress: Progress, lines: Line[]): ProgressSummary {
   return {
-    learned: lines.filter((l) => progress.lines[l.text]?.learned).length,
+    learned: lines.filter((l) => progress.lines[lineKey(l.text)]?.learned).length,
     total: lines.length,
     lastLine: progress.lastLine,
     lastStudiedAt: progress.lastStudiedAt,

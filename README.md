@@ -50,7 +50,7 @@ A few design choices worth knowing:
 
 ## Getting started
 
-Requirements: Python 3.12+ with [uv](https://docs.astral.sh/uv/), Node.js 20+, and a [Gemini API key](https://aistudio.google.com/apikey).
+Requirements: Python 3.12+ with [uv](https://docs.astral.sh/uv/), Node.js 22+, and a [Gemini API key](https://aistudio.google.com/apikey).
 
 ```bash
 git clone https://github.com/kkdai/song-lingo.git

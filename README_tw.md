@@ -51,7 +51,7 @@ YouTube 網址
 
 ## 開始使用
 
-需求：Python 3.12 以上與 [uv](https://docs.astral.sh/uv/)、Node.js 20 以上，以及一組 [Gemini API key](https://aistudio.google.com/apikey)。
+需求：Python 3.12 以上與 [uv](https://docs.astral.sh/uv/)、Node.js 22 以上，以及一組 [Gemini API key](https://aistudio.google.com/apikey)。
 
 ```bash
 git clone https://github.com/kkdai/song-lingo.git

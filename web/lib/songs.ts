@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
-import { type ProgressSummary, readProgress, summarize } from "@/lib/progress";
+import { type ProgressSummary, lineKey, readProgress, summarize } from "@/lib/progress";
 import { SPEEDS, clipName, hasTeacher } from "@/lib/teachers";
 
 export const DATA_DIR = process.env.SONG_DATA_DIR ?? path.join(process.cwd(), "..", "output");
@@ -36,6 +36,8 @@ export type Line = {
   audio?: Record<string, string>;
   /** Speeds whose clip already exists on disk (plays instantly, no TTS request). */
   audioCached?: string[];
+  /** This line's key in the song's progress (a hash of its text). */
+  progressKey?: string;
 };
 
 export type Song = {
@@ -94,6 +96,7 @@ export async function getSong(id: string): Promise<Song | null> {
   if (!isVideoId(id)) return null;
   const song = await readSong(id);
   if (!song) return null;
+  for (const line of song.lines) line.progressKey = lineKey(line.text);
   if (!hasTeacher(song.language)) {
     for (const line of song.lines) delete line.audio;
     return song;

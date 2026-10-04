@@ -3,7 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { POS_LABELS, SECTION_LABELS } from "@/lib/labels";
-import type { LineProgress, Progress, ShadowAttempt } from "@/lib/progress";
+import type { Progress } from "@/lib/progress";
+import { type LineProgress, type ShadowAttempt, withAttempt } from "@/lib/progressShared";
 import type { Line, Song, Token } from "@/lib/songs";
 import { type Recording, useRecorder } from "@/lib/useRecorder";
 import { useYouTubePlayer } from "@/lib/useYouTubePlayer";
@@ -67,8 +68,10 @@ export type ShadowResult = {
   transcript: string;
   score: number;
   words: { surface: string; status: "ok" | "wrong" | "missing" }[];
-  /** The attempt as saved to the song's progress. */
+  /** The attempt as recorded in the song's progress. */
   attempt: ShadowAttempt;
+  /** False when scoring worked but the progress store couldn't record it. */
+  saved: boolean;
 };
 
 /** One shadowing attempt on a line: recording → scoring → result (or error). */
@@ -217,8 +220,8 @@ export default function SongStudy({ song, initialProgress }: { song: Song; initi
       const body = await res?.json().catch(() => null);
       if (res?.ok) {
         setShadow({ index, status: "done", result: body, audioUrl });
-        const text = lines[index].text;
-        setProgress((p) => ({ ...p, [text]: { ...p[text], shadow: [...(p[text]?.shadow ?? []), body.attempt] } }));
+        const key = lines[index].progressKey!;
+        setProgress((p) => ({ ...p, [key]: withAttempt(p[key], body.attempt) }));
       }
       else setShadow({ index, status: "error", error: body?.error ?? "評分失敗，請再試一次。", audioUrl });
     },
@@ -264,13 +267,13 @@ export default function SongStudy({ song, initialProgress }: { song: Song; initi
     return () => clearTimeout(timer);
   }, [current, song.id]);
 
-  const isLearned = useCallback((i: number) => Boolean(progress[lines[i].text]?.learned), [progress, lines]);
+  const isLearned = useCallback((i: number) => Boolean(progress[lines[i].progressKey!]?.learned), [progress, lines]);
 
   const toggleLearned = useCallback(
     async (index: number) => {
-      const text = lines[index].text;
-      const value = !progress[text]?.learned;
-      const set = (learned: boolean) => setProgress((p) => ({ ...p, [text]: { ...p[text], learned } }));
+      const key = lines[index].progressKey!;
+      const value = !progress[key]?.learned;
+      const set = (learned: boolean) => setProgress((p) => ({ ...p, [key]: { ...p[key], learned } }));
       set(value);
       setProgressError(null);
       const error = await saveProgress(song.id, { learned: { index, value } });
@@ -378,7 +381,7 @@ export default function SongStudy({ song, initialProgress }: { song: Song; initi
             shadow={shadow?.index === current ? shadow : null}
             onShadow={toggleShadow}
             learned={isLearned(current)}
-            attempts={progress[line.text]?.shadow ?? []}
+            attempts={progress[line.progressKey!]?.shadow ?? []}
             onToggleLearned={() => toggleLearned(current)}
             progressError={progressError}
           />
@@ -529,12 +532,12 @@ function LyricList(props: {
                         ✓
                       </span>
                     )}
-                    {props.progress[l.text]?.learned && (
+                    {props.progress[l.progressKey!]?.learned && (
                       <span title="已學會" className="ml-1 text-xs text-amber-500">
                         ★
                       </span>
                     )}
-                    <BestScore attempts={props.progress[l.text]?.shadow} />
+                    <BestScore attempts={props.progress[l.progressKey!]?.shadow} />
                   </div>
                   {l.romanization && <div className="text-xs text-stone-500">{l.romanization}</div>}
                   {l.translation_zh && <div className="text-sm text-stone-600 dark:text-stone-400">{l.translation_zh}</div>}
@@ -674,6 +677,9 @@ function ShadowPanel({ shadow }: { shadow: Shadow }) {
           <p className="mt-2 text-stone-500">
             你念的是：<span className="text-stone-800 dark:text-stone-200">{result.transcript}</span>
           </p>
+          {!result.saved && (
+            <p className="mt-2 text-amber-700 dark:text-amber-300">這次的分數沒有存進學習紀錄（儲存失敗），不影響評分結果。</p>
+          )}
           <p className="mt-1 text-xs text-stone-400">綠色：念對　紅色：念成別的詞　灰色：沒念到。只檢查聽不聽得出是哪個詞，音調與長短音不在評分範圍。</p>
         </>
       )}

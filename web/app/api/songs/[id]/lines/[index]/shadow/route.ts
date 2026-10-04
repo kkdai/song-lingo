@@ -77,11 +77,19 @@ export async function POST(request: NextRequest, ctx: RouteContext<"/api/songs/[
       score: result.score,
       missed: result.words.filter((w) => w.status !== "ok").map((w) => w.surface),
     };
-    await updateProgress(id, (p) => {
-      p.lastLine = Number(index);
-      addAttempt(p, line.text, attempt);
-    });
-    return Response.json({ ...result, attempt });
+    // The transcription is already paid for: if saving fails, still return the score (marked
+    // unsaved) rather than an error that would make the learner record and pay again.
+    let saved = true;
+    try {
+      await updateProgress(id, (p) => {
+        p.lastLine = Number(index);
+        addAttempt(p, line.text, attempt);
+      });
+    } catch (e) {
+      saved = false;
+      console.error(`[shadow] progress not saved for ${id}: ${e instanceof Error ? e.message : e}`);
+    }
+    return Response.json({ ...result, attempt, saved });
   } catch (e) {
     if (!(e instanceof PipelineError)) throw e;
     const quota = e.reason.match(/^QUOTA (\d+)/);

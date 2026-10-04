@@ -112,9 +112,11 @@ export async function editLine(videoId: string, index: number, edit: LineEdit): 
     }
   }
 
+  // Copy progress before writing the files: the old entry is kept, so if a write below fails the
+  // edit can simply be retried, whereas copying afterwards would lose the old text on a retry.
+  if (edit.text !== undefined) await renameLine(videoId, original, edit.text);
   await writeJson(transcriptFile, transcript);
   await writeJson(annotatedFile, annotated);
-  if (edit.text !== undefined) await renameLine(videoId, original, edit.text);
   return targets.length;
 }
 
