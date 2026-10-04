@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { type ProgressSummary, lineKey, readProgress, summarize } from "@/lib/progress";
 import { SPEEDS, clipName, hasTeacher } from "@/lib/teachers";
 
 export const DATA_DIR = process.env.SONG_DATA_DIR ?? path.join(process.cwd(), "..", "output");
@@ -35,6 +36,8 @@ export type Line = {
   audio?: Record<string, string>;
   /** Speeds whose clip already exists on disk (plays instantly, no TTS request). */
   audioCached?: string[];
+  /** This line's key in the song's progress (a hash of its text). */
+  progressKey?: string;
 };
 
 export type Song = {
@@ -49,6 +52,7 @@ export type Song = {
 export type SongSummary = Pick<Song, "id" | "language" | "title_guess" | "artist_guess"> & {
   lineCount: number;
   hasTeacher: boolean;
+  progress: ProgressSummary;
 };
 
 export function isVideoId(id: string): boolean {
@@ -72,23 +76,27 @@ export async function listSongs(): Promise<SongSummary[]> {
     return [];
   }
   const ids = files.filter((f) => f.endsWith(".annotated.json")).map((f) => f.split(".")[0]);
-  const songs = await Promise.all(ids.filter(isVideoId).map(readSong));
-  return songs
-    .filter((s): s is Song => s !== null)
-    .map(({ id, language, title_guess, artist_guess, lines }) => ({
+  const songs = (await Promise.all(ids.filter(isVideoId).map(readSong))).filter((s): s is Song => s !== null);
+  const summaries = await Promise.all(
+    songs.map(async ({ id, language, title_guess, artist_guess, lines }) => ({
       id,
       language,
       title_guess,
       artist_guess,
       lineCount: lines.length,
       hasTeacher: hasTeacher(language),
-    }));
+      progress: summarize(await readProgress(id), lines),
+    })),
+  );
+  // Most recently studied first; songs never opened keep their order at the end.
+  return summaries.sort((a, b) => (b.progress.lastStudiedAt ?? "").localeCompare(a.progress.lastStudiedAt ?? ""));
 }
 
 export async function getSong(id: string): Promise<Song | null> {
   if (!isVideoId(id)) return null;
   const song = await readSong(id);
   if (!song) return null;
+  for (const line of song.lines) line.progressKey = lineKey(line.text);
   if (!hasTeacher(song.language)) {
     for (const line of song.lines) delete line.audio;
     return song;

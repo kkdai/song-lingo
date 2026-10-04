@@ -3,6 +3,8 @@
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { POS_LABELS, SECTION_LABELS } from "@/lib/labels";
+import type { Progress } from "@/lib/progress";
+import { type LineProgress, type ShadowAttempt, withAttempt } from "@/lib/progressShared";
 import type { Line, Song, Token } from "@/lib/songs";
 import { type Recording, useRecorder } from "@/lib/useRecorder";
 import { useYouTubePlayer } from "@/lib/useYouTubePlayer";
@@ -66,6 +68,10 @@ export type ShadowResult = {
   transcript: string;
   score: number;
   words: { surface: string; status: "ok" | "wrong" | "missing" }[];
+  /** The attempt as recorded in the song's progress. */
+  attempt: ShadowAttempt;
+  /** False when scoring worked but the progress store couldn't record it. */
+  saved: boolean;
 };
 
 /** One shadowing attempt on a line: recording → scoring → result (or error). */
@@ -102,11 +108,29 @@ function Word({ token }: { token: Token }) {
   return <>{token.surface}</>;
 }
 
-export default function SongStudy({ song }: { song: Song }) {
+/** Save a progress change; resolves to an error message, or null on success. */
+async function saveProgress(songId: string, change: { lastLine?: number; learned?: { index: number; value: boolean } }) {
+  const res = await fetch(`/api/songs/${songId}/progress`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(change),
+    // Lets the last position save finish while the page is being left.
+    keepalive: true,
+  }).catch(() => null);
+  if (res?.ok) return null;
+  const body = await res?.json().catch(() => null);
+  return body?.error ?? "進度儲存失敗。";
+}
+
+export default function SongStudy({ song, initialProgress }: { song: Song; initialProgress: Progress }) {
   const { lines, language } = song;
   const { containerRef, ready, time, error: playerError, playSegment, pause } = useYouTubePlayer(song.id);
   const embedBlocked = playerError !== null;
-  const [selected, setSelected] = useState(0);
+  // Resume where the learner left off.
+  const [selected, setSelected] = useState(() => Math.min(initialProgress.lastLine, Math.max(lines.length - 1, 0)));
+  // Learned flags and shadowing history, keyed by line text.
+  const [progress, setProgress] = useState<Record<string, LineProgress>>(initialProgress.lines);
+  const [progressError, setProgressError] = useState<string | null>(null);
   const [follow, setFollow] = useState(true);
   const [audioError, setAudioError] = useState<string | null>(null);
   // Clip URLs known to exist on the server; others are generated on first play.
@@ -194,10 +218,14 @@ export default function SongStudy({ song }: { song: Song }) {
       form.append("audio", take.blob, "take");
       const res = await fetch(`/api/songs/${song.id}/lines/${index}/shadow`, { method: "POST", body: form }).catch(() => null);
       const body = await res?.json().catch(() => null);
-      if (res?.ok) setShadow({ index, status: "done", result: body, audioUrl });
+      if (res?.ok) {
+        setShadow({ index, status: "done", result: body, audioUrl });
+        const key = lines[index].progressKey!;
+        setProgress((p) => ({ ...p, [key]: withAttempt(p[key], body.attempt) }));
+      }
       else setShadow({ index, status: "error", error: body?.error ?? "評分失敗，請再試一次。", audioUrl });
     },
-    [song.id],
+    [song.id, lines],
   );
 
   const recorder = useRecorder((take) => submitTake(recordingIndex.current, take));
@@ -228,6 +256,35 @@ export default function SongStudy({ song }: { song: Song }) {
 
   useEffect(() => () => void (takeUrl.current && URL.revokeObjectURL(takeUrl.current)), []);
 
+  // Remember the current line, once the learner has stayed on it for a moment.
+  const savedLine = useRef(selected);
+  useEffect(() => {
+    if (current === savedLine.current) return;
+    const timer = setTimeout(() => {
+      savedLine.current = current;
+      saveProgress(song.id, { lastLine: current });
+    }, 1500);
+    return () => clearTimeout(timer);
+  }, [current, song.id]);
+
+  const isLearned = useCallback((i: number) => Boolean(progress[lines[i].progressKey!]?.learned), [progress, lines]);
+
+  const toggleLearned = useCallback(
+    async (index: number) => {
+      const key = lines[index].progressKey!;
+      const value = !progress[key]?.learned;
+      const set = (learned: boolean) => setProgress((p) => ({ ...p, [key]: { ...p[key], learned } }));
+      set(value);
+      setProgressError(null);
+      const error = await saveProgress(song.id, { learned: { index, value } });
+      if (error) {
+        set(!value);
+        setProgressError(error);
+      }
+    },
+    [lines, progress, song.id],
+  );
+
   const go = useCallback(
     (delta: number) => pick(Math.min(lines.length - 1, Math.max(0, current + delta))),
     [pick, lines.length, current],
@@ -242,6 +299,7 @@ export default function SongStudy({ song }: { song: Song }) {
         n: () => playTeacher("normal"),
         s: () => playTeacher("slow"),
         r: () => playOriginal(current),
+        l: () => toggleLearned(current),
       };
       const action = actions[e.key];
       if (action) {
@@ -251,11 +309,18 @@ export default function SongStudy({ song }: { song: Song }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, playTeacher, playOriginal, current]);
+  }, [go, playTeacher, playOriginal, toggleLearned, current]);
 
   const line = lines[current];
   const pendingCount = lines.filter(needsAttention).length;
   const staleCount = lines.filter((l) => l.stale).length;
+
+  const learnedCount = lines.filter((_, i) => isLearned(i)).length;
+  const nextUnlearned = () => {
+    const order = [...lines.keys()].map((k) => (current + 1 + k) % lines.length);
+    const next = order.find((i) => !isLearned(i));
+    if (next !== undefined) pick(next);
+  };
 
   const nextPending = () => {
     const order = [...lines.keys()].map((k) => (current + 1 + k) % lines.length);
@@ -263,13 +328,16 @@ export default function SongStudy({ song }: { song: Song }) {
     if (next !== undefined) pick(next);
   };
 
-  const listProps = { lines, current, playing, onPick: pick, onPlayOriginal: playOriginal };
+  const listProps = { lines, progress, current, playing, onPick: pick, onPlayOriginal: playOriginal };
   const listHeader = (
     <ListHeader
       songId={song.id}
       staleCount={staleCount}
       pendingCount={pendingCount}
       onNextPending={nextPending}
+      learnedCount={learnedCount}
+      total={lines.length}
+      onNextUnlearned={nextUnlearned}
       follow={follow && !embedBlocked}
       embedBlocked={embedBlocked}
       onFollowChange={(on) => {
@@ -312,10 +380,14 @@ export default function SongStudy({ song }: { song: Song }) {
             onNext={() => go(1)}
             shadow={shadow?.index === current ? shadow : null}
             onShadow={toggleShadow}
+            learned={isLearned(current)}
+            attempts={progress[line.progressKey!]?.shadow ?? []}
+            onToggleLearned={() => toggleLearned(current)}
+            progressError={progressError}
           />
         )}
         <p className="hidden text-xs text-stone-500 lg:block">
-          快捷鍵：← → 上下句　N 老師正常速　S 老師慢速　R 原曲這句
+          快捷鍵：← → 上下句　N 老師正常速　S 老師慢速　R 原曲這句　L 標記已學會
         </p>
       </section>
 
@@ -364,12 +436,29 @@ function ListHeader(props: {
   staleCount: number;
   pendingCount: number;
   onNextPending: () => void;
+  learnedCount: number;
+  total: number;
+  onNextUnlearned: () => void;
   follow: boolean;
   embedBlocked: boolean;
   onFollowChange: (on: boolean) => void;
 }) {
+  const allLearned = props.learnedCount === props.total;
   return (
     <>
+      <div className="mb-2 rounded-lg bg-emerald-50 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-950/40 dark:text-emerald-200">
+        <div className="flex items-center justify-between gap-2">
+          <span>{allLearned ? "🎉 整首都學會了！" : `已學會 ${props.learnedCount} / ${props.total} 句`}</span>
+          {!allLearned && (
+            <button onClick={props.onNextUnlearned} className="rounded px-2 py-0.5 font-medium hover:bg-emerald-100 dark:hover:bg-emerald-900/40">
+              下一句未學會 →
+            </button>
+          )}
+        </div>
+        <div className="mt-1.5 h-1.5 overflow-hidden rounded-full bg-emerald-100 dark:bg-emerald-900/40">
+          <div className="h-full rounded-full bg-emerald-500 transition-all" style={{ width: `${(100 * props.learnedCount) / Math.max(props.total, 1)}%` }} />
+        </div>
+      </div>
       {props.staleCount > 0 && <ReannotateBanner songId={props.songId} staleCount={props.staleCount} />}
       {props.pendingCount > 0 && (
         <div className="mb-2 flex items-center justify-between rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
@@ -394,6 +483,7 @@ function ListHeader(props: {
 
 function LyricList(props: {
   lines: Line[];
+  progress: Record<string, LineProgress>;
   current: number;
   playing: number | null;
   onPick: (index: number) => void;
@@ -442,6 +532,12 @@ function LyricList(props: {
                         ✓
                       </span>
                     )}
+                    {props.progress[l.progressKey!]?.learned && (
+                      <span title="已學會" className="ml-1 text-xs text-amber-500">
+                        ★
+                      </span>
+                    )}
+                    <BestScore attempts={props.progress[l.progressKey!]?.shadow} />
                   </div>
                   {l.romanization && <div className="text-xs text-stone-500">{l.romanization}</div>}
                   {l.translation_zh && <div className="text-sm text-stone-600 dark:text-stone-400">{l.translation_zh}</div>}
@@ -567,7 +663,7 @@ function ShadowPanel({ shadow }: { shadow: Shadow }) {
         <>
           <div className="flex items-baseline justify-between gap-2">
             <span className="font-semibold text-stone-500">跟讀結果</span>
-            <span className={`text-2xl font-bold ${result.score >= 80 ? "text-emerald-600" : result.score >= 50 ? "text-amber-600" : "text-rose-600"}`}>
+            <span className={`text-2xl font-bold ${scoreColor(result.score)}`}>
               {result.score} 分
             </span>
           </div>
@@ -581,6 +677,9 @@ function ShadowPanel({ shadow }: { shadow: Shadow }) {
           <p className="mt-2 text-stone-500">
             你念的是：<span className="text-stone-800 dark:text-stone-200">{result.transcript}</span>
           </p>
+          {!result.saved && (
+            <p className="mt-2 text-amber-700 dark:text-amber-300">這次的分數沒有存進學習紀錄（儲存失敗），不影響評分結果。</p>
+          )}
           <p className="mt-1 text-xs text-stone-400">綠色：念對　紅色：念成別的詞　灰色：沒念到。只檢查聽不聽得出是哪個詞，音調與長短音不在評分範圍。</p>
         </>
       )}
@@ -589,6 +688,48 @@ function ShadowPanel({ shadow }: { shadow: Shadow }) {
           {playing ? "播放中…" : "▶ 聽我的錄音"}
         </button>
       )}
+    </div>
+  );
+}
+
+function scoreColor(score: number): string {
+  return score >= 80 ? "text-emerald-600" : score >= 50 ? "text-amber-600" : "text-rose-600";
+}
+
+/** Best shadowing score of a line, shown next to it in the lyric list. */
+function BestScore({ attempts }: { attempts?: ShadowAttempt[] }) {
+  if (!attempts?.length) return null;
+  const best = Math.max(...attempts.map((a) => a.score));
+  return (
+    <span title={`跟讀 ${attempts.length} 次，最高 ${best} 分`} className={`ml-1.5 font-mono text-xs ${scoreColor(best)}`}>
+      {best}
+    </span>
+  );
+}
+
+/** Past shadowing scores of the current line, oldest first, and the words most often missed. */
+function ShadowHistory({ attempts }: { attempts: ShadowAttempt[] }) {
+  const best = Math.max(...attempts.map((a) => a.score));
+  const missed = new Map<string, number>();
+  for (const word of attempts.slice(-5).flatMap((a) => a.missed)) missed.set(word, (missed.get(word) ?? 0) + 1);
+  const often = [...missed].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  return (
+    <div className="mt-3 text-xs text-stone-500">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <span>
+          跟讀 {attempts.length} 次・最高 <span className={`font-semibold ${scoreColor(best)}`}>{best}</span> 分
+        </span>
+        <span className="flex gap-1 font-mono" aria-label="最近的分數">
+          {attempts.slice(-8).map((a, i) => (
+            // Server and browser format dates slightly differently; the browser's wins.
+            <span key={i} title={new Date(a.at).toLocaleString("zh-TW")} suppressHydrationWarning className={scoreColor(a.score)}>
+              {a.score}
+            </span>
+          ))}
+        </span>
+      </div>
+      {often.length > 0 && <div className="mt-1">最近常沒念好：{often.map(([w]) => w).join("、")}</div>}
     </div>
   );
 }
@@ -674,6 +815,10 @@ function LineCard(props: {
   onNext: () => void;
   shadow: Shadow | null;
   onShadow: () => void;
+  learned: boolean;
+  attempts: ShadowAttempt[];
+  onToggleLearned: () => void;
+  progressError: string | null;
 }) {
   const { line, index, total, language, ready } = props;
   const tokens = line.tokens ?? [];
@@ -722,6 +867,17 @@ function LineCard(props: {
         </span>
         <div className="flex gap-1">
           <button
+            onClick={props.onToggleLearned}
+            aria-pressed={props.learned}
+            className={`rounded px-2 py-1 ${
+              props.learned
+                ? "bg-amber-100 font-medium text-amber-800 dark:bg-amber-900/40 dark:text-amber-200"
+                : "hover:bg-stone-100 dark:hover:bg-stone-800"
+            }`}
+          >
+            {props.learned ? "★ 已學會" : "☆ 學會了"}
+          </button>
+          <button
             onClick={() => setEditing((v) => !v)}
             className={`rounded px-2 py-1 hover:bg-stone-100 dark:hover:bg-stone-800 ${editing ? "bg-stone-100 dark:bg-stone-800" : ""}`}
           >
@@ -742,6 +898,8 @@ function LineCard(props: {
       {line.romanization && <p className="mt-1 text-stone-500">{line.romanization}</p>}
       {line.translation_zh && <p className="mt-2 text-xl lg:text-lg">{line.translation_zh}</p>}
       {props.shadow && <ShadowPanel shadow={props.shadow} />}
+      {props.attempts.length > 0 && <ShadowHistory attempts={props.attempts} />}
+      {props.progressError && <p className="mt-2 text-sm text-rose-700 dark:text-rose-300">{props.progressError}</p>}
 
       {line.stale && (
         <p className="mt-3 rounded-md bg-sky-50 px-3 py-2 text-sm text-sky-800 dark:bg-sky-950/40 dark:text-sky-200">

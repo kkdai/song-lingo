@@ -16,6 +16,7 @@ Learn a language through the songs you love. Paste a YouTube MV link, and Song L
 - **A teacher who reads each line** — a voice designed from a text description with Gemini TTS, in a normal and a slow, clearly articulated version.
 - **Study alongside the MV** — the lyric list follows the video; replay just the current line of the original song.
 - **Shadowing** — record yourself reading the line; `gemini-3.5-transcribe` transcribes it and each word is marked as said, said differently, or missed (it checks whether the word is recognizable, not pitch accent or vowel length). Recordings are never stored.
+- **Study progress** — the page reopens on the line you were on; mark lines as learned (★), see each line's shadowing scores and the words you keep missing, and track how much of each song you've learned from the home page.
 - **Review and correct** — lines likely to be wrong are flagged; fix the text, reading or translation in place, then re-analyze the song.
 - **Languages** — Japanese and Korean (with romanization) and English (with vocabulary and linking notes).
 
@@ -49,7 +50,7 @@ A few design choices worth knowing:
 
 ## Getting started
 
-Requirements: Python 3.12+ with [uv](https://docs.astral.sh/uv/), Node.js 20+, and a [Gemini API key](https://aistudio.google.com/apikey).
+Requirements: Python 3.12+ with [uv](https://docs.astral.sh/uv/), Node.js 22+, and a [Gemini API key](https://aistudio.google.com/apikey).
 
 ```bash
 git clone https://github.com/kkdai/song-lingo.git
@@ -67,7 +68,7 @@ Open the app, click **＋ 加入新歌 (Add song)**, and paste a YouTube MV link
 ### Using the study page
 
 - Click a line to select it; double-click to play that line in the MV.
-- Keyboard: `←` `→` previous / next line, `N` teacher (normal), `S` teacher (slow), `R` replay the original line.
+- Keyboard: `←` `→` previous / next line, `N` teacher (normal), `S` teacher (slow), `R` replay the original line, `L` mark the line as learned.
 - **✏️ 校對 (Review)** edits a line; **🔄 重新分析整首 (Re-analyze)** refreshes romanization and word breakdowns after edits (one Flash request; manual translations and review marks are kept).
 - If a video's owner has disabled embedding, the player is replaced by the thumbnail and a link that opens YouTube at the current line.
 
@@ -91,7 +92,7 @@ annotate.py           romanization, translation, word breakdown, notes
 speak.py              bulk teacher-audio generation
 config/teachers.json  teacher voice descriptions and speaking styles (shared by Python and the web app)
 web/                  Next.js app
-output/               your songs and audio (git-ignored)
+output/               your songs, audio and study progress (git-ignored)
 ```
 
 ## Deployment (Google Cloud Run, private to you)
@@ -102,11 +103,12 @@ Song Lingo runs on Cloud Run as a single container: the Next.js app plus the uv-
 |---|---|
 | Container | `Dockerfile` (Node 22 + uv/Python), built by Cloud Build from source |
 | Song data and audio | A private Cloud Storage bucket mounted at `/data` (`SONG_DATA_DIR`) |
+| Study progress | A dedicated Firestore database (`FIRESTORE_DATABASE`), one document per song; without it (local dev) progress is saved to `output/progress/` |
 | API key | Secret Manager, exposed as `GEMINI_API_KEY` |
 | Access | Identity-Aware Proxy (IAP) in front, plus an in-app check of IAP's signed header |
 | Scaling | One instance (`--max-instances=1`), CPU always allocated so "add song" jobs finish in the background |
 
-Why a single instance: clip-generation dedupe, the quota back-off and add-song job status live in memory, and the bucket mount has no cross-instance locking. That's plenty for personal use.
+Why a single instance: clip-generation dedupe, the quota back-off and add-song job status live in memory, and the bucket mount has no cross-instance locking. That's plenty for personal use. (Study progress is already safe across instances: Firestore updates run in transactions.)
 
 ### Four layers of access control
 
@@ -135,6 +137,13 @@ printf '%s' "$GEMINI_API_KEY" | gcloud secrets create song-lingo-gemini-api-key 
 gcloud secrets add-iam-policy-binding song-lingo-gemini-api-key --project=PROJECT_ID \
   --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
 
+# 2b. A dedicated Firestore database for study progress; the service account may use only this one
+gcloud firestore databases create --database=song-lingo --location=REGION \
+  --type=firestore-native --delete-protection --project=PROJECT_ID
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member=serviceAccount:$SA --role=roles/datastore.user \
+  --condition='expression=resource.name=="projects/PROJECT_ID/databases/song-lingo",title=song-lingo-firestore-only'
+
 # 3. (Optional) Upload songs you already have locally
 gcloud storage rsync output gs://BUCKET --recursive --exclude='.*\.tmp$'
 
@@ -143,7 +152,7 @@ gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION \
   --no-allow-unauthenticated --iap \
   --service-account=$SA \
   --set-secrets=GEMINI_API_KEY=song-lingo-gemini-api-key:latest \
-  --set-env-vars=ALLOWED_EMAILS=you@gmail.com,IAP_AUDIENCE=/projects/PROJECT_NUMBER/locations/REGION/services/song-lingo \
+  --set-env-vars=ALLOWED_EMAILS=you@gmail.com,IAP_AUDIENCE=/projects/PROJECT_NUMBER/locations/REGION/services/song-lingo,FIRESTORE_DATABASE=song-lingo \
   --max-instances=1 --min-instances=0 --no-cpu-throttling \
   --execution-environment=gen2 --memory=1Gi --cpu=1 --timeout=600 \
   --add-volume=name=data,type=cloud-storage,bucket=BUCKET \
@@ -192,6 +201,16 @@ rm /tmp/iap-oauth.yaml
 Also worth doing: restrict the API key to the Generative Language API, and set a billing budget alert.
 
 To redeploy after code changes, `gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION` reuses the existing settings. Note that the bucket and your local `output/` are separate copies; use `gcloud storage rsync` to move data between them.
+
+## Roadmap
+
+Ideas for what comes next — see [ROADMAP.md](ROADMAP.md) for the full list. Highlights:
+
+- **Remember progress** — ✅ per-song study progress and shadowing score history; next: a personal word list with spaced-repetition review and Anki export.
+- **Practice tools** — A-B loop and 0.5×/0.75× playback of the original line, sub-second timestamps, karaoke fill-in-the-blank mode, Japanese pitch-accent hints, a cross-song grammar index.
+- **Library** — delete songs, search/filter, edit title and artist, playlists, import existing lyrics and only align timestamps.
+- **Languages** — Mandarin, Cantonese, Spanish and more; a configurable explanation language beyond Traditional Chinese; multiple teacher voices.
+- **Quota & engineering** — a quota dashboard, re-annotating only edited lines, tests for the romanization and shadowing logic, splitting `SongStudy.tsx`, CI.
 
 ## About the lyrics
 
