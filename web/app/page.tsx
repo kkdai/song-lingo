@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { LANGUAGE_LABELS } from "@/lib/labels";
+import type { ProgressSummary } from "@/lib/progress";
 import { listSongs } from "@/lib/songs";
 
 export const dynamic = "force-dynamic";
@@ -37,7 +38,7 @@ export default async function Home() {
                   alt=""
                   className="aspect-video w-32 shrink-0 rounded-md object-cover"
                 />
-                <div className="min-w-0">
+                <div className="min-w-0 flex-1">
                   <div className="truncate font-semibold">{song.title_guess ?? song.id}</div>
                   <div className="truncate text-sm text-stone-500">{song.artist_guess ?? "未知歌手"}</div>
                   <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
@@ -53,6 +54,7 @@ export default async function Home() {
                       </span>
                     )}
                   </div>
+                  <SongProgress progress={song.progress} />
                 </div>
               </Link>
             </li>
@@ -60,5 +62,21 @@ export default async function Home() {
         </ul>
       )}
     </main>
+  );
+}
+
+function SongProgress({ progress }: { progress: ProgressSummary }) {
+  if (!progress.lastStudiedAt) return <div className="mt-2 text-xs text-stone-400">還沒開始學</div>;
+  const percent = Math.round((100 * progress.learned) / Math.max(progress.total, 1));
+  const date = new Date(progress.lastStudiedAt).toLocaleDateString("zh-TW", { month: "numeric", day: "numeric" });
+  return (
+    <div className="mt-2">
+      <div className="h-1.5 overflow-hidden rounded-full bg-stone-100 dark:bg-stone-800">
+        <div className="h-full rounded-full bg-emerald-500" style={{ width: `${percent}%` }} />
+      </div>
+      <div className="mt-1 text-xs text-stone-500">
+        已學會 {progress.learned}/{progress.total} 句・{date} 學到第 {progress.lastLine + 1} 句
+      </div>
+    </div>
   );
 }

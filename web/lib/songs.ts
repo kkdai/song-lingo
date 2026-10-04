@@ -1,5 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import path from "node:path";
+import { type ProgressSummary, readProgress, summarize } from "@/lib/progress";
 import { SPEEDS, clipName, hasTeacher } from "@/lib/teachers";
 
 export const DATA_DIR = process.env.SONG_DATA_DIR ?? path.join(process.cwd(), "..", "output");
@@ -49,6 +50,7 @@ export type Song = {
 export type SongSummary = Pick<Song, "id" | "language" | "title_guess" | "artist_guess"> & {
   lineCount: number;
   hasTeacher: boolean;
+  progress: ProgressSummary;
 };
 
 export function isVideoId(id: string): boolean {
@@ -72,17 +74,20 @@ export async function listSongs(): Promise<SongSummary[]> {
     return [];
   }
   const ids = files.filter((f) => f.endsWith(".annotated.json")).map((f) => f.split(".")[0]);
-  const songs = await Promise.all(ids.filter(isVideoId).map(readSong));
-  return songs
-    .filter((s): s is Song => s !== null)
-    .map(({ id, language, title_guess, artist_guess, lines }) => ({
+  const songs = (await Promise.all(ids.filter(isVideoId).map(readSong))).filter((s): s is Song => s !== null);
+  const summaries = await Promise.all(
+    songs.map(async ({ id, language, title_guess, artist_guess, lines }) => ({
       id,
       language,
       title_guess,
       artist_guess,
       lineCount: lines.length,
       hasTeacher: hasTeacher(language),
-    }));
+      progress: summarize(await readProgress(id), lines),
+    })),
+  );
+  // Most recently studied first; songs never opened keep their order at the end.
+  return summaries.sort((a, b) => (b.progress.lastStudiedAt ?? "").localeCompare(a.progress.lastStudiedAt ?? ""));
 }
 
 export async function getSong(id: string): Promise<Song | null> {

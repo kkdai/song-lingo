@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { LANGUAGE_LABELS } from "@/lib/labels";
+import { readProgress } from "@/lib/progress";
 import { getSong } from "@/lib/songs";
 import SongStudy from "./SongStudy";
 
@@ -10,6 +11,7 @@ export default async function SongPage({ params }: PageProps<"/songs/[id]">) {
   const { id } = await params;
   const song = await getSong(id);
   if (!song) notFound();
+  const progress = await readProgress(id);
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-6">
@@ -23,7 +25,7 @@ export default async function SongPage({ params }: PageProps<"/songs/[id]">) {
           {LANGUAGE_LABELS[song.language] ?? song.language}
         </span>
       </header>
-      <SongStudy song={song} />
+      <SongStudy song={song} initialProgress={progress} />
     </main>
   );
 }

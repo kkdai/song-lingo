@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { NextRequest } from "next/server";
 import { PipelineError, runScript } from "@/lib/pipeline";
+import { addAttempt, updateProgress } from "@/lib/progress";
 import { isVideoId, readSong } from "@/lib/songs";
 
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -29,7 +30,8 @@ function fail(status: number, error: string) {
 /**
  * Score a shadowing attempt: the learner's recording of one line is transcribed with
  * gemini-3.5-transcribe (via shadow.py) and compared with that line. The recording is written
- * to a temp dir only for the call and deleted right after; nothing is logged or stored.
+ * to a temp dir only for the call and deleted right after; nothing is logged or stored except
+ * the score and missed words, which go into the song's study progress.
  */
 export async function POST(request: NextRequest, ctx: RouteContext<"/api/songs/[id]/lines/[index]/shadow">) {
   const { id, index } = await ctx.params;
@@ -69,7 +71,17 @@ export async function POST(request: NextRequest, ctx: RouteContext<"/api/songs/[
       }),
     );
     const stdout = await runScript("shadow.py", [audioPath, format[0], expectedPath]);
-    return Response.json(JSON.parse(stdout.trim().split("\n").pop()!));
+    const result: { score: number; words: { surface: string; status: string }[] } = JSON.parse(stdout.trim().split("\n").pop()!);
+    const attempt = {
+      at: new Date().toISOString(),
+      score: result.score,
+      missed: result.words.filter((w) => w.status !== "ok").map((w) => w.surface),
+    };
+    await updateProgress(id, (p) => {
+      p.lastLine = Number(index);
+      addAttempt(p, line.text, attempt);
+    });
+    return Response.json({ ...result, attempt });
   } catch (e) {
     if (!(e instanceof PipelineError)) throw e;
     const quota = e.reason.match(/^QUOTA (\d+)/);

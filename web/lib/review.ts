@@ -1,6 +1,7 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { PipelineError, runScript } from "@/lib/pipeline";
+import { renameLine } from "@/lib/progress";
 import { DATA_DIR, type Line, type Song } from "@/lib/songs";
 import { REPO_ROOT } from "@/lib/teachers";
 
@@ -113,6 +114,7 @@ export async function editLine(videoId: string, index: number, edit: LineEdit): 
 
   await writeJson(transcriptFile, transcript);
   await writeJson(annotatedFile, annotated);
+  if (edit.text !== undefined) await renameLine(videoId, original, edit.text);
   return targets.length;
 }
 

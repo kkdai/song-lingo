@@ -17,6 +17,7 @@
 - **老師逐句示範**：用 Gemini TTS 的 voice design，從一段文字描述設計出老師的聲音。每句都有正常速度和「慢慢念、每個音節都清楚」兩種版本。
 - **跟著 MV 學**：歌詞列表會跟著影片播放自動切換，也可以只重播原曲的某一句。
 - **跟讀評分**：錄下自己念的這一句，由 `gemini-3.5-transcribe` 轉錄後逐詞比對，標出念對、念成別的詞或沒念到的地方。檢查的是「聽不聽得出是哪個詞」，不評音調和長短音。錄音不會保存。
+- **學習進度**：重新打開時會回到上次學到的那一句；可以把句子標記為「已學會」（★），看到每句的跟讀分數紀錄和常念不好的詞，首頁也會顯示每首歌學會了多少。
 - **校對與修正**：可能有錯的句子會被標記出來，可以直接修改原文、讀音或翻譯，再重新分析整首歌。
 - **支援語言**：日文、韓文（附羅馬拼音）和英文（附單字與連音說明）。
 
@@ -68,7 +69,7 @@ npm run dev                 # 打開 http://localhost:3000
 ### 學習頁面的操作
 
 - 單擊選擇一句，雙擊播放 MV 裡的那一句。
-- 快捷鍵：`←` `→` 上一句、下一句，`N` 老師正常速度，`S` 老師慢速，`R` 重播原曲這一句。
+- 快捷鍵：`←` `→` 上一句、下一句，`N` 老師正常速度，`S` 老師慢速，`R` 重播原曲這一句，`L` 標記這句已學會。
 - **✏️ 校對** 可以修改這一句。修改後按 **🔄 重新分析整首**，會更新拼音和單字拆解，使用 1 次 Flash 請求，手動改過的翻譯和校對標記都會保留。
 - 如果影片擁有者不允許在其他網站播放，影片區塊會改成顯示縮圖，並提供一個連結，在 YouTube 上從目前這一句開始播放。
 
@@ -92,7 +93,7 @@ annotate.py           拼音、翻譯、逐字拆解、說明
 speak.py              一次產生整首歌的示範音
 config/teachers.json  老師聲音的描述與語氣設定（Python 和網頁共用）
 web/                  Next.js 網頁
-output/               你的歌曲與音檔（已被 git 忽略）
+output/               你的歌曲、音檔與學習進度（已被 git 忽略）
 ```
 
 ## 部署（Google Cloud Run，只有你能使用）
@@ -103,11 +104,12 @@ Song Lingo 在 Cloud Run 上以單一容器執行，裡面包含 Next.js 網頁�
 |---|---|
 | 容器 | `Dockerfile`（Node 22 + uv/Python），由 Cloud Build 從原始碼建置 |
 | 歌曲資料與音檔 | 私人的 Cloud Storage bucket，掛載到 `/data`（`SONG_DATA_DIR`） |
+| 學習進度 | 專用的 Firestore 資料庫（`FIRESTORE_DATABASE`），每首歌一份文件；沒有設定時（本機開發）存在 `output/progress/` |
 | API key | 放在 Secret Manager，以 `GEMINI_API_KEY` 環境變數提供 |
 | 存取控制 | 前面是 Identity-Aware Proxy（IAP），程式內再驗證一次 IAP 的簽章 |
 | 執行個體 | 只有 1 個（`--max-instances=1`），CPU 持續分配，讓「加入新歌」的背景工作能跑完 |
 
-只用 1 個執行個體的原因：避免重複產生音檔、額度用完時暫停呼叫，以及加入新歌的進度，這些狀態都存在記憶體裡；掛載的 bucket 也沒有跨執行個體的鎖定機制。個人使用，1 個執行個體就足夠。
+只用 1 個執行個體的原因：避免重複產生音檔、額度用完時暫停呼叫，以及加入新歌的進度，這些狀態都存在記憶體裡；掛載的 bucket 也沒有跨執行個體的鎖定機制。個人使用，1 個執行個體就足夠。（學習進度已經不受這個限制：Firestore 的更新都在交易中執行。）
 
 ### 四層存取控制
 
@@ -136,6 +138,13 @@ printf '%s' "$GEMINI_API_KEY" | gcloud secrets create song-lingo-gemini-api-key 
 gcloud secrets add-iam-policy-binding song-lingo-gemini-api-key --project=PROJECT_ID \
   --member=serviceAccount:$SA --role=roles/secretmanager.secretAccessor
 
+# 2b. 學習進度專用的 Firestore 資料庫；服務帳號只能存取這一個資料庫
+gcloud firestore databases create --database=song-lingo --location=REGION \
+  --type=firestore-native --delete-protection --project=PROJECT_ID
+gcloud projects add-iam-policy-binding PROJECT_ID \
+  --member=serviceAccount:$SA --role=roles/datastore.user \
+  --condition='expression=resource.name=="projects/PROJECT_ID/databases/song-lingo",title=song-lingo-firestore-only'
+
 # 3.（選用）上傳本機已經有的歌曲
 gcloud storage rsync output gs://BUCKET --recursive --exclude='.*\.tmp$'
 
@@ -144,7 +153,7 @@ gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION \
   --no-allow-unauthenticated --iap \
   --service-account=$SA \
   --set-secrets=GEMINI_API_KEY=song-lingo-gemini-api-key:latest \
-  --set-env-vars=ALLOWED_EMAILS=you@gmail.com,IAP_AUDIENCE=/projects/PROJECT_NUMBER/locations/REGION/services/song-lingo \
+  --set-env-vars=ALLOWED_EMAILS=you@gmail.com,IAP_AUDIENCE=/projects/PROJECT_NUMBER/locations/REGION/services/song-lingo,FIRESTORE_DATABASE=song-lingo \
   --max-instances=1 --min-instances=0 --no-cpu-throttling \
   --execution-environment=gen2 --memory=1Gi --cpu=1 --timeout=600 \
   --add-volume=name=data,type=cloud-storage,bucket=BUCKET \
@@ -193,6 +202,16 @@ rm /tmp/iap-oauth.yaml
 另外也建議：把 API key 限制成只能呼叫 Generative Language API，並設定帳單的預算警示。
 
 修改程式後重新部署，執行 `gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION` 即可，其他設定都會沿用。要注意 bucket 和本機的 `output/` 是兩份各自獨立的資料，需要時可以用 `gcloud storage rsync` 在兩者之間同步。
+
+## 未來規劃
+
+接下來可以做的功能，完整清單見 [ROADMAP.md](ROADMAP.md#繁體中文)。重點：
+
+- **記住學習進度** — ✅ 每首歌的進度與跟讀分數紀錄；下一步：個人單字本搭配間隔重複複習與 Anki 匯出。
+- **練習工具** — 原曲 A-B 循環與 0.5×/0.75× 慢速、更精準的時間軸、卡拉 OK 填空模式、日文音調提示、跨歌曲的文法索引。
+- **歌曲庫** — 刪除歌曲、搜尋篩選、修改歌名歌手、歌單、匯入現成歌詞只對齊時間軸。
+- **語言** — 華語、粵語、西班牙文等；繁中以外的解說語言；每種語言多位老師可選。
+- **配額與工程** — 配額儀表板、只重新分析修改過的句子、拼音與跟讀邏輯的測試、拆分 `SongStudy.tsx`、CI。
 
 ## 關於歌詞
 
