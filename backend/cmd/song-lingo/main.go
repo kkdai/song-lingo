@@ -19,7 +19,9 @@ import (
 )
 
 const usage = `Usage:
-  song-lingo [serve]    start the API server on 127.0.0.1:$BACKEND_PORT (default 8081)
+  song-lingo [serve]                          start the API server on 127.0.0.1:$BACKEND_PORT (default 8081)
+  song-lingo transcribe <youtube_url>         lyrics and timestamps        → output/<id>.json
+  song-lingo annotate <output/<id>.json>      romanization, translation…   → output/<id>.annotated.json
 `
 
 func main() {
@@ -35,6 +37,10 @@ func main() {
 	switch cmd {
 	case "serve":
 		err = serve(cfg)
+	case "transcribe":
+		err = transcribeCmd(cfg, os.Args[2:])
+	case "annotate":
+		err = annotateCmd(cfg, os.Args[2:])
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 		return
