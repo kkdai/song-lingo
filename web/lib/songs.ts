@@ -1,7 +1,6 @@
-import { readdir, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { type ProgressSummary, lineKey, readProgress, summarize } from "@/lib/progress";
-import { SPEEDS, clipName, hasTeacher } from "@/lib/teachers";
+import type { ProgressSummary } from "@/lib/progress";
 
 export const DATA_DIR = process.env.SONG_DATA_DIR ?? path.join(process.cwd(), "..", "output");
 
@@ -66,46 +65,4 @@ export async function readSong(id: string): Promise<Song | null> {
   } catch {
     return null;
   }
-}
-
-export async function listSongs(): Promise<SongSummary[]> {
-  let files: string[];
-  try {
-    files = await readdir(DATA_DIR);
-  } catch {
-    return [];
-  }
-  const ids = files.filter((f) => f.endsWith(".annotated.json")).map((f) => f.split(".")[0]);
-  const songs = (await Promise.all(ids.filter(isVideoId).map(readSong))).filter((s): s is Song => s !== null);
-  const summaries = await Promise.all(
-    songs.map(async ({ id, language, title_guess, artist_guess, lines }) => ({
-      id,
-      language,
-      title_guess,
-      artist_guess,
-      lineCount: lines.length,
-      hasTeacher: hasTeacher(language),
-      progress: summarize(await readProgress(id), lines),
-    })),
-  );
-  // Most recently studied first; songs never opened keep their order at the end.
-  return summaries.sort((a, b) => (b.progress.lastStudiedAt ?? "").localeCompare(a.progress.lastStudiedAt ?? ""));
-}
-
-export async function getSong(id: string): Promise<Song | null> {
-  if (!isVideoId(id)) return null;
-  const song = await readSong(id);
-  if (!song) return null;
-  for (const line of song.lines) line.progressKey = lineKey(line.text);
-  if (!hasTeacher(song.language)) {
-    for (const line of song.lines) delete line.audio;
-    return song;
-  }
-
-  const cached = new Set(await readdir(path.join(DATA_DIR, "audio", id)).catch(() => []));
-  for (const line of song.lines) {
-    line.audio = Object.fromEntries(SPEEDS.map((speed) => [speed, `/api/audio/${id}/${clipName(line.text, speed)}`]));
-    line.audioCached = SPEEDS.filter((speed) => cached.has(clipName(line.text, speed)));
-  }
-  return song;
 }
