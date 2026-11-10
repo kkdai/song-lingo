@@ -15,6 +15,7 @@ import (
 	"sort"
 
 	"github.com/kkdai/song-lingo/backend/internal/config"
+	"github.com/kkdai/song-lingo/backend/internal/pipeline"
 	"github.com/kkdai/song-lingo/backend/internal/progress"
 	"github.com/kkdai/song-lingo/backend/internal/review"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
@@ -25,6 +26,7 @@ type Server struct {
 	songs    songs.Store
 	progress progress.Store
 	review   *review.Service
+	pipeline *pipeline.Runner
 }
 
 func New(cfg *config.Config, progressStore progress.Store) *Server {
@@ -34,6 +36,7 @@ func New(cfg *config.Config, progressStore progress.Store) *Server {
 		songs:    store,
 		progress: progressStore,
 		review:   &review.Service{Songs: store, Progress: progressStore},
+		pipeline: pipeline.NewRunner(store, pipeline.DefaultModel, pipeline.LazyClient(cfg.APIKey)),
 	}
 }
 
@@ -49,7 +52,10 @@ func NewProgressStore(ctx context.Context, cfg *config.Config) (progress.Store, 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/songs", s.listSongs)
+	mux.HandleFunc("POST /api/songs", s.addSong)
 	mux.HandleFunc("GET /api/songs/{id}", s.getSong)
+	mux.HandleFunc("GET /api/songs/{id}/status", s.songStatus)
+	mux.HandleFunc("POST /api/songs/{id}/reannotate", s.reannotate)
 	mux.HandleFunc("PATCH /api/songs/{id}/progress", s.patchProgress)
 	mux.HandleFunc("PATCH /api/songs/{id}/lines/{index}", s.patchLine)
 	return logErrors(mux)
