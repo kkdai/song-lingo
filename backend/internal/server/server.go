@@ -5,15 +5,18 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 
 	"github.com/kkdai/song-lingo/backend/internal/config"
 	"github.com/kkdai/song-lingo/backend/internal/progress"
+	"github.com/kkdai/song-lingo/backend/internal/review"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
 )
 
@@ -21,25 +24,34 @@ type Server struct {
 	cfg      *config.Config
 	songs    songs.Store
 	progress progress.Store
+	review   *review.Service
 }
 
 func New(cfg *config.Config, progressStore progress.Store) *Server {
+	store := songs.Store{Dir: cfg.DataDir}
 	return &Server{
 		cfg:      cfg,
-		songs:    songs.Store{Dir: cfg.DataDir},
+		songs:    store,
 		progress: progressStore,
+		review:   &review.Service{Songs: store, Progress: progressStore},
 	}
 }
 
-// DefaultProgressStore is the file store under <data dir>/progress.
-func DefaultProgressStore(cfg *config.Config) progress.Store {
-	return progress.NewFileStore(filepath.Join(cfg.DataDir, "progress"))
+// NewProgressStore uses Firestore when FIRESTORE_DATABASE is set (Cloud Run), else JSON files
+// under <data dir>/progress.
+func NewProgressStore(ctx context.Context, cfg *config.Config) (progress.Store, error) {
+	if db := os.Getenv("FIRESTORE_DATABASE"); db != "" {
+		return progress.NewFirestoreStore(ctx, db)
+	}
+	return progress.NewFileStore(filepath.Join(cfg.DataDir, "progress")), nil
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/songs", s.listSongs)
 	mux.HandleFunc("GET /api/songs/{id}", s.getSong)
+	mux.HandleFunc("PATCH /api/songs/{id}/progress", s.patchProgress)
+	mux.HandleFunc("PATCH /api/songs/{id}/lines/{index}", s.patchLine)
 	return logErrors(mux)
 }
 

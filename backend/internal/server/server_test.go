@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kkdai/song-lingo/backend/internal/config"
+	"github.com/kkdai/song-lingo/backend/internal/progress"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
 )
 
@@ -39,7 +40,7 @@ func newTestServer(t *testing.T) (*Server, *config.Config) {
 	os.MkdirAll(filepath.Join(dir, "progress"), 0o755)
 	os.WriteFile(filepath.Join(dir, "progress", songID+".json"),
 		[]byte(`{"version":1,"lastLine":1,"lastStudiedAt":"2026-01-01T00:00:00.000Z","lines":{"僕":{"learned":true}}}`), 0o644)
-	return New(cfg, DefaultProgressStore(cfg)), cfg
+	return New(cfg, progress.NewFileStore(filepath.Join(dir, "progress"))), cfg
 }
 
 func do(t *testing.T, s *Server, method, path string, body string) *httptest.ResponseRecorder {
