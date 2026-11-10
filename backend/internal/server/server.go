@@ -19,6 +19,7 @@ import (
 	"github.com/kkdai/song-lingo/backend/internal/progress"
 	"github.com/kkdai/song-lingo/backend/internal/review"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
+	"github.com/kkdai/song-lingo/backend/internal/tts"
 )
 
 type Server struct {
@@ -27,6 +28,9 @@ type Server struct {
 	progress progress.Store
 	review   *review.Service
 	pipeline *pipeline.Runner
+	tts      *tts.Service
+
+	audioErrors recentErrors
 }
 
 func New(cfg *config.Config, progressStore progress.Store) *Server {
@@ -37,6 +41,7 @@ func New(cfg *config.Config, progressStore progress.Store) *Server {
 		progress: progressStore,
 		review:   &review.Service{Songs: store, Progress: progressStore},
 		pipeline: pipeline.NewRunner(store, pipeline.DefaultModel, pipeline.LazyClient(cfg.APIKey)),
+		tts:      tts.NewService(cfg, store, &tts.API{Base: tts.DefaultAPIBase, APIKey: cfg.APIKey}),
 	}
 }
 
@@ -57,6 +62,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/songs/{id}/status", s.songStatus)
 	mux.HandleFunc("POST /api/songs/{id}/reannotate", s.reannotate)
 	mux.HandleFunc("PATCH /api/songs/{id}/progress", s.patchProgress)
+	mux.HandleFunc("GET /api/audio/{id}/{file}", s.audio)
 	mux.HandleFunc("PATCH /api/songs/{id}/lines/{index}", s.patchLine)
 	return logErrors(mux)
 }
