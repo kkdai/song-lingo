@@ -1,7 +1,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { type LineProgress, type ShadowAttempt, withAttempt } from "@/lib/progressShared";
-import { DATA_DIR, type Line } from "@/lib/songs";
+import { DATA_DIR } from "@/lib/songs";
 import { textHash } from "@/lib/teachers";
 
 export type { LineProgress, ShadowAttempt } from "@/lib/progressShared";
@@ -124,40 +124,12 @@ function getStore(): Promise<Store> {
   return (store ??= databaseId ? firestoreStore(databaseId) : Promise.resolve(fileStore()));
 }
 
-export async function readProgress(videoId: string): Promise<Progress> {
-  return (await getStore()).read(videoId);
-}
-
 /** Read-modify-write the song's progress atomically; also records when it was last studied. */
 export async function updateProgress(videoId: string, change: (p: Progress) => void): Promise<Progress> {
   return (await getStore()).update(videoId, change);
-}
-
-export function setLearned(progress: Progress, text: string, learned: boolean) {
-  const entry = (progress.lines[lineKey(text)] ??= {});
-  if (learned) entry.learned = true;
-  else delete entry.learned;
 }
 
 export function addAttempt(progress: Progress, text: string, attempt: ShadowAttempt) {
   progress.lines[lineKey(text)] = withAttempt(progress.lines[lineKey(text)], attempt);
 }
 
-/** Carry a line's progress over when the review UI changes its text. */
-export async function renameLine(videoId: string, from: string, to: string) {
-  const [fromKey, toKey] = [lineKey(from), lineKey(to)];
-  if (fromKey === toKey || !(await readProgress(videoId)).lines[fromKey]) return;
-  await updateProgress(videoId, (p) => {
-    // Keep the old entry too: other lines with the old text may not have been edited.
-    if (p.lines[fromKey] && !p.lines[toKey]) p.lines[toKey] = structuredClone(p.lines[fromKey]);
-  });
-}
-
-export function summarize(progress: Progress, lines: Line[]): ProgressSummary {
-  return {
-    learned: lines.filter((l) => progress.lines[lineKey(l.text)]?.learned).length,
-    total: lines.length,
-    lastLine: progress.lastLine,
-    lastStudiedAt: progress.lastStudiedAt,
-  };
-}

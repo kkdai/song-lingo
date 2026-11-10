@@ -55,10 +55,14 @@ func serve(cfg *config.Config) error {
 	if port == "" {
 		port = "8081"
 	}
+	progressStore, err := server.NewProgressStore(ctx, cfg)
+	if err != nil {
+		return err
+	}
 	srv := &http.Server{
 		// Localhost only: requests reach the API through Next.js, which checks access first.
 		Addr:              net.JoinHostPort("127.0.0.1", port),
-		Handler:           server.New(cfg, server.DefaultProgressStore(cfg)).Handler(),
+		Handler:           server.New(cfg, progressStore).Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	errc := make(chan error, 1)
