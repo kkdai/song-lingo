@@ -25,12 +25,12 @@ type Store interface {
 	Update(ctx context.Context, videoID string, change func(*Progress)) (*Progress, error)
 }
 
-// now formats like JavaScript's Date.toISOString(), which earlier versions stored.
-func now() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z") }
+// Now formats the current time like JavaScript's Date.toISOString(), which earlier versions stored.
+func Now() string { return time.Now().UTC().Format("2006-01-02T15:04:05.000Z") }
 
 func stamp(p *Progress, change func(*Progress)) *Progress {
 	change(p)
-	at := now()
+	at := Now()
 	p.LastStudiedAt = &at
 	return p
 }

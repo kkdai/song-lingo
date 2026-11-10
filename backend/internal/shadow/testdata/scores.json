@@ -1,0 +1,417 @@
+[
+ {
+  "expected": {
+   "language": "ja",
+   "text": "君の名は",
+   "tokens": [
+    {
+     "surface": "君",
+     "reading": "きみ"
+    },
+    {
+     "surface": "の",
+     "reading": "の"
+    },
+    {
+     "surface": "名",
+     "reading": "な"
+    },
+    {
+     "surface": "は",
+     "reading": "は"
+    }
+   ]
+  },
+  "transcript": "きみのなは",
+  "result": {
+   "transcript": "きみのなは",
+   "score": 100,
+   "words": [
+    {
+     "surface": "君",
+     "status": "ok"
+    },
+    {
+     "surface": "の",
+     "status": "ok"
+    },
+    {
+     "surface": "名",
+     "status": "ok"
+    },
+    {
+     "surface": "は",
+     "status": "ok"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "ja",
+   "text": "君の名は",
+   "tokens": [
+    {
+     "surface": "君",
+     "reading": "きみ"
+    },
+    {
+     "surface": "の",
+     "reading": "の"
+    },
+    {
+     "surface": "名",
+     "reading": "な"
+    },
+    {
+     "surface": "は",
+     "reading": "は"
+    }
+   ]
+  },
+  "transcript": "きみのなわ",
+  "result": {
+   "transcript": "きみのなわ",
+   "score": 80,
+   "words": [
+    {
+     "surface": "君",
+     "status": "ok"
+    },
+    {
+     "surface": "の",
+     "status": "ok"
+    },
+    {
+     "surface": "名",
+     "status": "ok"
+    },
+    {
+     "surface": "は",
+     "status": "wrong"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "ja",
+   "text": "君の名は",
+   "tokens": [
+    {
+     "surface": "君",
+     "reading": "きみ"
+    },
+    {
+     "surface": "の",
+     "reading": "の"
+    },
+    {
+     "surface": "名",
+     "reading": "な"
+    },
+    {
+     "surface": "は",
+     "reading": "は"
+    }
+   ]
+  },
+  "transcript": "きみの",
+  "result": {
+   "transcript": "きみの",
+   "score": 60,
+   "words": [
+    {
+     "surface": "君",
+     "status": "ok"
+    },
+    {
+     "surface": "の",
+     "status": "ok"
+    },
+    {
+     "surface": "名",
+     "status": "missing"
+    },
+    {
+     "surface": "は",
+     "status": "missing"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "ja",
+   "text": "君の名は",
+   "tokens": [
+    {
+     "surface": "君",
+     "reading": "きみ"
+    },
+    {
+     "surface": "の",
+     "reading": "の"
+    },
+    {
+     "surface": "名",
+     "reading": "な"
+    },
+    {
+     "surface": "は",
+     "reading": "は"
+    }
+   ]
+  },
+  "transcript": "キミノナハ。",
+  "result": {
+   "transcript": "キミノナハ。",
+   "score": 100,
+   "words": [
+    {
+     "surface": "君",
+     "status": "ok"
+    },
+    {
+     "surface": "の",
+     "status": "ok"
+    },
+    {
+     "surface": "名",
+     "status": "ok"
+    },
+    {
+     "surface": "は",
+     "status": "ok"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "ja",
+   "text": "愛してる",
+   "reading": "あいしてる",
+   "tokens": []
+  },
+  "transcript": "あいしてる",
+  "result": {
+   "transcript": "あいしてる",
+   "score": 100,
+   "words": [
+    {
+     "surface": "愛してる",
+     "status": "ok"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "ja",
+   "text": "ありがとう",
+   "tokens": [
+    {
+     "surface": "ありがとう",
+     "reading": ""
+    }
+   ]
+  },
+  "transcript": "ありがと",
+  "result": {
+   "transcript": "ありがと",
+   "score": 0,
+   "words": [
+    {
+     "surface": "ありがとう",
+     "status": "wrong"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "ja",
+   "text": "Hello 世界",
+   "tokens": [
+    {
+     "surface": "Hello",
+     "reading": "はろー"
+    },
+    {
+     "surface": "世界",
+     "reading": "せかい"
+    }
+   ]
+  },
+  "transcript": "Hello、せかい",
+  "result": {
+   "transcript": "Hello、せかい",
+   "score": 100,
+   "words": [
+    {
+     "surface": "Hello",
+     "status": "ok"
+    },
+    {
+     "surface": "世界",
+     "status": "ok"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "en",
+   "text": "I love you so much!"
+  },
+  "transcript": "i love you so much",
+  "result": {
+   "transcript": "i love you so much",
+   "score": 100,
+   "words": [
+    {
+     "surface": "I",
+     "status": "ok"
+    },
+    {
+     "surface": "love",
+     "status": "ok"
+    },
+    {
+     "surface": "you",
+     "status": "ok"
+    },
+    {
+     "surface": "so",
+     "status": "ok"
+    },
+    {
+     "surface": "much!",
+     "status": "ok"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "en",
+   "text": "I love you so much!"
+  },
+  "transcript": "I loved you much.",
+  "result": {
+   "transcript": "I loved you much.",
+   "score": 60,
+   "words": [
+    {
+     "surface": "I",
+     "status": "ok"
+    },
+    {
+     "surface": "love",
+     "status": "wrong"
+    },
+    {
+     "surface": "you",
+     "status": "ok"
+    },
+    {
+     "surface": "so",
+     "status": "missing"
+    },
+    {
+     "surface": "much!",
+     "status": "ok"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "en",
+   "text": "Don't stop believin'"
+  },
+  "transcript": "dont stop believing",
+  "result": {
+   "transcript": "dont stop believing",
+   "score": 67,
+   "words": [
+    {
+     "surface": "Don't",
+     "status": "ok"
+    },
+    {
+     "surface": "stop",
+     "status": "ok"
+    },
+    {
+     "surface": "believin'",
+     "status": "wrong"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "ko",
+   "text": "사랑해 너를"
+  },
+  "transcript": "사랑해, 너를",
+  "result": {
+   "transcript": "사랑해, 너를",
+   "score": 100,
+   "words": [
+    {
+     "surface": "사랑해",
+     "status": "ok"
+    },
+    {
+     "surface": "너를",
+     "status": "ok"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "ko",
+   "text": "사랑해 너를"
+  },
+  "transcript": "사랑 너를",
+  "result": {
+   "transcript": "사랑 너를",
+   "score": 50,
+   "words": [
+    {
+     "surface": "사랑해",
+     "status": "wrong"
+    },
+    {
+     "surface": "너를",
+     "status": "ok"
+    }
+   ]
+  }
+ },
+ {
+  "expected": {
+   "language": "en",
+   "text": "Ｈｅｌｌｏ　ｗｏｒｌｄ"
+  },
+  "transcript": "hello world",
+  "result": {
+   "transcript": "hello world",
+   "score": 100,
+   "words": [
+    {
+     "surface": "Ｈｅｌｌｏ",
+     "status": "ok"
+    },
+    {
+     "surface": "ｗｏｒｌｄ",
+     "status": "ok"
+    }
+   ]
+  }
+ }
+]
