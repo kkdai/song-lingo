@@ -1,12 +1,13 @@
 import Link from "next/link";
 import { LANGUAGE_LABELS } from "@/lib/labels";
+import { backendGet } from "@/lib/backend";
 import type { ProgressSummary } from "@/lib/progress";
-import { listSongs } from "@/lib/songs";
+import type { SongSummary } from "@/lib/songs";
 
 export const dynamic = "force-dynamic";
 
 export default async function Home() {
-  const songs = await listSongs();
+  const songs = (await backendGet<SongSummary[]>("/api/songs")) ?? [];
 
   return (
     <main className="mx-auto w-full max-w-3xl px-4 py-10">

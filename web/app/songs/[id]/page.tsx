@@ -1,17 +1,18 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { LANGUAGE_LABELS } from "@/lib/labels";
-import { readProgress } from "@/lib/progress";
-import { getSong } from "@/lib/songs";
+import { backendGet } from "@/lib/backend";
+import type { Progress } from "@/lib/progress";
+import { type Song, isVideoId } from "@/lib/songs";
 import SongStudy from "./SongStudy";
 
 export const dynamic = "force-dynamic";
 
 export default async function SongPage({ params }: PageProps<"/songs/[id]">) {
   const { id } = await params;
-  const song = await getSong(id);
-  if (!song) notFound();
-  const progress = await readProgress(id);
+  const data = isVideoId(id) ? await backendGet<{ song: Song; progress: Progress }>(`/api/songs/${id}`) : null;
+  if (!data) notFound();
+  const { song, progress } = data;
 
   return (
     <main className="mx-auto w-full max-w-7xl px-4 py-6">
