@@ -1,8 +1,5 @@
-import { readFile } from "node:fs/promises";
-import path from "node:path";
+// Song types as the Go API (backend/internal/songs) returns them.
 import type { ProgressSummary } from "@/lib/progress";
-
-export const DATA_DIR = process.env.SONG_DATA_DIR ?? path.join(process.cwd(), "..", "output");
 
 const VIDEO_ID = /^[\w-]{11}$/;
 
@@ -56,13 +53,4 @@ export type SongSummary = Pick<Song, "id" | "language" | "title_guess" | "artist
 
 export function isVideoId(id: string): boolean {
   return VIDEO_ID.test(id);
-}
-
-export async function readSong(id: string): Promise<Song | null> {
-  try {
-    const raw = await readFile(path.join(DATA_DIR, `${id}.annotated.json`), "utf8");
-    return { id, ...JSON.parse(raw) };
-  } catch {
-    return null;
-  }
 }

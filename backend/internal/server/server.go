@@ -18,6 +18,7 @@ import (
 	"github.com/kkdai/song-lingo/backend/internal/pipeline"
 	"github.com/kkdai/song-lingo/backend/internal/progress"
 	"github.com/kkdai/song-lingo/backend/internal/review"
+	"github.com/kkdai/song-lingo/backend/internal/shadow"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
 	"github.com/kkdai/song-lingo/backend/internal/tts"
 )
@@ -29,19 +30,29 @@ type Server struct {
 	review   *review.Service
 	pipeline *pipeline.Runner
 	tts      *tts.Service
+	shadow   transcriber
 
 	audioErrors recentErrors
+	shadowGate  shadowGate
+}
+
+// transcriber writes down what the learner said in a recording (shadow.Transcriber).
+type transcriber interface {
+	Transcribe(ctx context.Context, audio []byte, mimeType, language string) (string, error)
 }
 
 func New(cfg *config.Config, progressStore progress.Store) *Server {
 	store := songs.Store{Dir: cfg.DataDir}
+	geminiClient := pipeline.LazyClient(cfg.APIKey)
+	rest := &tts.API{Base: tts.DefaultAPIBase, APIKey: cfg.APIKey}
 	return &Server{
 		cfg:      cfg,
 		songs:    store,
 		progress: progressStore,
 		review:   &review.Service{Songs: store, Progress: progressStore},
-		pipeline: pipeline.NewRunner(store, pipeline.DefaultModel, pipeline.LazyClient(cfg.APIKey)),
-		tts:      tts.NewService(cfg, store, &tts.API{Base: tts.DefaultAPIBase, APIKey: cfg.APIKey}),
+		pipeline: pipeline.NewRunner(store, pipeline.DefaultModel, geminiClient),
+		tts:      tts.NewService(cfg, store, rest),
+		shadow:   &shadow.Transcriber{Client: geminiClient, API: rest},
 	}
 }
 
@@ -64,6 +75,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PATCH /api/songs/{id}/progress", s.patchProgress)
 	mux.HandleFunc("GET /api/audio/{id}/{file}", s.audio)
 	mux.HandleFunc("PATCH /api/songs/{id}/lines/{index}", s.patchLine)
+	mux.HandleFunc("POST /api/songs/{id}/lines/{index}/shadow", s.shadowLine)
 	return logErrors(mux)
 }
 

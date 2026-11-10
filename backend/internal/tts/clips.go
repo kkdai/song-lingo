@@ -204,7 +204,7 @@ func (s *Service) synthesizeClip(ctx context.Context, videoID, path, hash, speed
 	if err != nil {
 		return nil, ttsMessage(err)
 	}
-	audio, err := s.API.Synthesize(ctx, s.Cfg.TTSModel, voice, text, s.Cfg.Styles[speed])
+	audio, err := Synthesize(ctx, s.API, s.Cfg.TTSModel, voice, text, s.Cfg.Styles[speed])
 	if err != nil {
 		return nil, ttsMessage(err)
 	}

@@ -1,5 +1,4 @@
-// Progress types and rules shared by the server (lib/progress.ts) and the study page.
-// Kept free of Node imports so the client bundle can use it.
+// Progress types and rules the study page shares with the Go API (backend/internal/progress).
 
 /** Attempts kept per line; older ones are dropped. */
 export const MAX_ATTEMPTS = 20;

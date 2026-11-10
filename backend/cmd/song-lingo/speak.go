@@ -112,7 +112,7 @@ func speakOne(ctx context.Context, service *tts.Service, voice, path, text, styl
 		if quotaExceeded.Load() {
 			return name + ": skipped (daily quota exhausted)"
 		}
-		audio, err := service.API.Synthesize(ctx, service.Cfg.TTSModel, voice, text, style)
+		audio, err := tts.Synthesize(ctx, service.API, service.Cfg.TTSModel, voice, text, style)
 		if err == nil {
 			if err := songs.WriteAtomic(path, audio); err != nil {
 				return name + ": " + err.Error()
