@@ -27,19 +27,20 @@ Learn a language through the songs you love. Paste a YouTube MV link, and Song L
 | Lyric transcription | `gemini-3.8-flash` reading a YouTube URL directly, with structured JSON output |
 | Translation, word breakdown, grammar | `gemini-3.8-flash` |
 | Teacher voice | `gemini-3.8-flash-tts` — voice design (a voice created from a text prompt) and per-line speaking style |
-| Romanization | Gemini for word segmentation and part of speech; [pykakasi](https://github.com/miurahr/pykakasi) for kana → Hepburn, with particle fixes (は→wa, へ→e, を→o); Revised Romanization for Korean |
-| Pipeline scripts | Python 3.12, [uv](https://docs.astral.sh/uv/), [google-genai](https://github.com/googleapis/python-genai) |
-| Web app | [Next.js](https://nextjs.org/) 16 (App Router), React 19, Tailwind CSS 4 |
+| Romanization | Gemini for word segmentation and part of speech; kana → Hepburn in Go, with particle fixes (は→wa, へ→e, を→o); Revised Romanization for Korean |
+| Kanji readings | [kagome](https://github.com/ikawaha/kagome) (pure-Go Japanese morphological analyzer, IPA dictionary) |
+| Back end | Go 1.26 API server and CLI, [Go GenAI SDK](https://github.com/googleapis/go-genai), Firestore client |
+| Web app | [Next.js](https://nextjs.org/) 16 (App Router), React 19, Tailwind CSS 4 — front end only; `/api/*` is forwarded to the Go server |
 | Video | YouTube IFrame Player API |
 
 ## How it works
 
 ```
 YouTube URL
-  → transcribe.py   lyrics + timestamps (+ hiragana readings for Japanese)
-  → annotate.py     romanization, zh-TW translation, word breakdown, grammar & pronunciation notes
-  → web app         study line by line next to the MV
-                    teacher audio is generated the first time a line is played, then cached
+  → transcribe   lyrics + timestamps (+ hiragana readings for Japanese)
+  → annotate     romanization, zh-TW translation, word breakdown, grammar & pronunciation notes
+  → web app      study line by line next to the MV
+                 teacher audio is generated the first time a line is played, then cached
 ```
 
 A few design choices worth knowing:
@@ -50,17 +51,16 @@ A few design choices worth knowing:
 
 ## Getting started
 
-Requirements: Python 3.12+ with [uv](https://docs.astral.sh/uv/), Node.js 22+, and a [Gemini API key](https://aistudio.google.com/apikey).
+Requirements: [Go](https://go.dev/dl/) 1.26+, Node.js 22+, and a [Gemini API key](https://aistudio.google.com/apikey).
 
 ```bash
 git clone https://github.com/kkdai/song-lingo.git
 cd song-lingo
 cp .env.example .env        # set GEMINI_API_KEY
-uv sync
 
 cd web
 npm install
-npm run dev                 # http://localhost:3000
+npm run dev                 # builds and starts the Go API too; http://localhost:3000
 ```
 
 Open the app, click **＋ 加入新歌 (Add song)**, and paste a YouTube MV link. Adding a song takes about a minute and uses roughly two Gemini Flash requests (no TTS quota).
@@ -72,36 +72,41 @@ Open the app, click **＋ 加入新歌 (Add song)**, and paste a YouTube MV link
 - **✏️ 校對 (Review)** edits a line; **🔄 重新分析整首 (Re-analyze)** refreshes romanization and word breakdowns after edits (one Flash request; manual translations and review marks are kept).
 - If a video's owner has disabled embedding, the player is replaced by the thumbnail and a link that opens YouTube at the current line.
 
-## Command-line scripts
+## Command line
 
-The web app runs these for you, but they also work on their own:
+The web app runs these steps for you, but the Go binary also runs them on its own:
 
 ```bash
-uv run transcribe.py "https://www.youtube.com/watch?v=VIDEO_ID"   # → output/VIDEO_ID.json
-uv run annotate.py output/VIDEO_ID.json                            # → output/VIDEO_ID.annotated.json
-uv run speak.py output/VIDEO_ID.annotated.json                     # pre-generate all teacher audio
+cd backend
+go run ./cmd/song-lingo transcribe "https://www.youtube.com/watch?v=VIDEO_ID"  # → output/VIDEO_ID.json
+go run ./cmd/song-lingo annotate ../output/VIDEO_ID.json                       # → output/VIDEO_ID.annotated.json
+go run ./cmd/song-lingo speak ../output/VIDEO_ID.annotated.json                # pre-generate all teacher audio
+go test ./...                                                                  # tests
 ```
 
-`speak.py` spends one TTS request per clip (about 50–70 per song), so on Tier 1 it's usually better to let the web app generate audio as you study.
+`speak` spends one TTS request per clip (about 50–70 per song), so on Tier 1 it's usually better to let the web app generate audio as you study.
 
 ## Project structure
 
 ```
-transcribe.py         YouTube MV → timestamped lyrics
-annotate.py           romanization, translation, word breakdown, notes
-speak.py              bulk teacher-audio generation
-config/teachers.json  teacher voice descriptions and speaking styles (shared by Python and the web app)
-web/                  Next.js app
+backend/              Go API server and CLI (cmd/song-lingo)
+  internal/pipeline   YouTube MV → timestamped lyrics → romanization, translation, notes
+  internal/tts        teacher audio
+  internal/shadow     shadowing: transcribe a recording and score it
+  internal/japanese   kana → romaji, kanji → hiragana
+  internal/progress   study progress (JSON files or Firestore)
+config/teachers.json  teacher voice descriptions and speaking styles
+web/                  Next.js front end
 output/               your songs, audio and study progress (git-ignored)
 ```
 
 ## Deployment (Google Cloud Run, private to you)
 
-Song Lingo runs on Cloud Run as a single container: the Next.js app plus the uv-managed Python pipeline it calls. Everything is locked down so that only the Google accounts you list can use it — the page shows full lyrics and every generation spends your Gemini quota, so it should never be public.
+Song Lingo runs on Cloud Run as a single container: the Next.js front end on `$PORT` and the Go API on localhost, which Next.js forwards `/api/*` to (`web/scripts/start.mjs` runs both and stops the container if either exits). Everything is locked down so that only the Google accounts you list can use it — the page shows full lyrics and every generation spends your Gemini quota, so it should never be public.
 
 | Piece | Setup |
 |---|---|
-| Container | `Dockerfile` (Node 22 + uv/Python), built by Cloud Build from source |
+| Container | `Dockerfile` (Go binary + Node 22), built by Cloud Build from source |
 | Song data and audio | A private Cloud Storage bucket mounted at `/data` (`SONG_DATA_DIR`) |
 | Study progress | A dedicated Firestore database (`FIRESTORE_DATABASE`), one document per song; without it (local dev) progress is saved to `output/progress/` |
 | API key | Secret Manager, exposed as `GEMINI_API_KEY` |

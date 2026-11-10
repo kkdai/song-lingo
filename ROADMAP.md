@@ -39,7 +39,7 @@ Constraints every item has to respect:
 
 ## 4. More languages and learners
 
-- **More song languages** — Mandarin and Cantonese (pinyin / jyutping), Spanish, French, Thai. The pipeline is already keyed by language (`LANG_RULES` in `annotate.py`, `config/teachers.json`, `LANGUAGE_CODES` in `shadow.py`), so each language is mostly prompt rules, a teacher voice and a romanization step.
+- **More song languages** — Mandarin and Cantonese (pinyin / jyutping), Spanish, French, Thai. The pipeline is already keyed by language (`langRulesByCode` in `backend/internal/pipeline/annotate.go`, `config/teachers.json`, `languageCodes` in `backend/internal/shadow/transcribe.go`), so each language is mostly prompt rules, a teacher voice and a romanization step.
 - **Configurable explanation language** — translations and notes are hard-coded to Traditional Chinese (Taiwan). Making the target language a setting would open the app to non-Chinese-speaking learners.
 - **Interface i18n** — the UI strings are Chinese only.
 - **Choose a teacher** — more than one voice per language (male/female, regional accent) from `config/teachers.json`.
@@ -52,7 +52,7 @@ Constraints every item has to respect:
 
 ## 6. Engineering
 
-- **Tests** — there are none yet. Start with the pure functions that carry the most logic: `romanize_ja` and the reading cross-check in `annotate.py`, `char_states` / `token_statuses` in `shadow.py`, and `editLine` in `web/lib/review.ts`.
+- **Tests** — the Go back end has unit and HTTP tests (`cd backend && go test ./...`); the front end has none yet.
 - **Split `SongStudy.tsx`** — at ~850 lines it holds the player sync, keyboard shortcuts, shadowing and review; extracting the line card, shadow panel and mobile controls would make new practice features easier to add.
 - **Schema versioning** for the song JSON so new fields (progress, accent data) can be migrated.
 - **Durable job state** — move add-song status and quota back-off out of memory if the app ever needs more than one instance or should survive restarts mid-job.
@@ -99,7 +99,7 @@ Constraints every item has to respect:
 
 ### 4. 更多語言與學習者
 
-- **更多歌曲語言** — 華語與粵語（拼音／粵拼）、西班牙文、法文、泰文。流程已經依語言區分（`annotate.py` 的 `LANG_RULES`、`config/teachers.json`、`shadow.py` 的 `LANGUAGE_CODES`），新增語言主要是提示規則、老師聲音與拼音轉換。
+- **更多歌曲語言** — 華語與粵語（拼音／粵拼）、西班牙文、法文、泰文。流程已經依語言區分（`backend/internal/pipeline/annotate.go` 的 `langRulesByCode`、`config/teachers.json`、`backend/internal/shadow/transcribe.go` 的 `languageCodes`），新增語言主要是提示規則、老師聲音與拼音轉換。
 - **可設定的解說語言** — 翻譯與註解目前固定為繁體中文（台灣）。改成設定值就能服務不懂中文的學習者。
 - **介面多語系** — UI 目前只有中文。
 - **選擇老師** — 每種語言提供多個聲音（男聲／女聲、不同口音），由 `config/teachers.json` 設定。
@@ -112,7 +112,7 @@ Constraints every item has to respect:
 
 ### 6. 工程
 
-- **測試** — 目前沒有。先從邏輯最多的純函式開始：`annotate.py` 的 `romanize_ja` 與讀音交叉檢查、`shadow.py` 的 `char_states` / `token_statuses`、`web/lib/review.ts` 的 `editLine`。
+- **測試** — Go 後端已有單元測試與 HTTP 測試（`cd backend && go test ./...`）；前端還沒有。
 - **拆分 `SongStudy.tsx`** — 約 850 行，同時處理播放同步、快捷鍵、跟讀與校對；把句子卡片、跟讀面板與行動版控制抽出來，之後加練習功能會更容易。
 - **歌曲 JSON 的 schema 版本** — 讓新欄位（進度、音調資料）可以遷移。
 - **持久化工作狀態** — 若需要多個執行個體或要在工作途中重啟，把加歌狀態與配額退避移出記憶體。
