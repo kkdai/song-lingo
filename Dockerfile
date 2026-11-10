@@ -1,27 +1,33 @@
-# Next.js web app + the Python pipeline it shells out to (transcribe.py / annotate.py via `uv run`).
+# One container: the Go API (backend/) on localhost and the Next.js front end that forwards /api/* to it.
 # Song data lives in a Cloud Storage volume mounted at SONG_DATA_DIR.
+
+FROM golang:1.26 AS backend
+WORKDIR /src
+COPY backend/go.mod backend/go.sum ./
+RUN go mod download
+COPY backend/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/song-lingo ./cmd/song-lingo
+
+FROM node:22-slim AS web
+WORKDIR /app/web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/ ./
+# BACKEND_URL is baked into the /api rewrite at build time; the default matches BACKEND_PORT below.
+RUN npm run build
+
 FROM node:22-slim
-
-COPY --from=ghcr.io/astral-sh/uv:0.8 /uv /uvx /usr/local/bin/
-ENV UV_PYTHON_INSTALL_DIR=/opt/uv-python \
-    UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
-
+# Go reads the system CA bundle for HTTPS (Node ships its own).
+COPY --from=backend /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=backend /out/song-lingo /usr/local/bin/song-lingo
 WORKDIR /app
-COPY pyproject.toml uv.lock .python-version ./
-RUN uv sync --frozen --no-dev --no-install-project
-# The venv is complete; don't let `uv run` re-resolve at runtime.
-ENV UV_NO_SYNC=1
-
-COPY web/package.json web/package-lock.json web/
-RUN cd web && npm ci
-
-COPY . .
-RUN cd web && npm run build
+COPY config/ config/
+COPY --from=web /app/web web/
+WORKDIR /app/web
 
 ENV NODE_ENV=production \
+    SONG_LINGO_ROOT=/app \
     SONG_DATA_DIR=/data \
+    BACKEND_PORT=8081 \
     NEXT_TELEMETRY_DISABLED=1
-WORKDIR /app/web
-# next start listens on $PORT (Cloud Run sets it).
-CMD ["node_modules/.bin/next", "start"]
+CMD ["node", "scripts/start.mjs"]

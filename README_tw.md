@@ -28,19 +28,20 @@
 | 歌詞轉錄 | `gemini-3.8-flash` 直接讀取 YouTube 網址，以結構化 JSON 輸出 |
 | 翻譯、單字拆解、文法說明 | `gemini-3.8-flash` |
 | 老師的聲音 | `gemini-3.8-flash-tts`：voice design（用文字描述產生聲音）與逐句的語氣控制 |
-| 羅馬拼音 | Gemini 負責斷詞與詞性；[pykakasi](https://github.com/miurahr/pykakasi) 把假名轉成平文式拼音，並修正助詞念法（は→wa、へ→e、を→o）；韓文使用 Revised Romanization |
-| 處理腳本 | Python 3.12、[uv](https://docs.astral.sh/uv/)、[google-genai](https://github.com/googleapis/python-genai) |
-| 網頁 | [Next.js](https://nextjs.org/) 16（App Router）、React 19、Tailwind CSS 4 |
+| 羅馬拼音 | Gemini 負責斷詞與詞性；Go 程式把假名轉成平文式拼音，並修正助詞念法（は→wa、へ→e、を→o）；韓文使用 Revised Romanization |
+| 漢字讀音 | [kagome](https://github.com/ikawaha/kagome)（純 Go 的日文斷詞，IPA 辭典） |
+| 後端 | Go 1.26 的 API 伺服器與命令列工具、[Go GenAI SDK](https://github.com/googleapis/go-genai)、Firestore |
+| 網頁 | [Next.js](https://nextjs.org/) 16（App Router）、React 19、Tailwind CSS 4，只負責前端；`/api/*` 轉給 Go 伺服器 |
 | 影片 | YouTube IFrame Player API |
 
 ## 運作方式
 
 ```
 YouTube 網址
-  → transcribe.py   歌詞與時間軸（日文另附平假名讀音）
-  → annotate.py     羅馬拼音、繁中翻譯、逐字拆解、文法與發音說明
-  → 網頁            在 MV 旁邊逐句學習
-                    老師示範音在第一次播放時產生，之後直接使用存好的檔案
+  → transcribe   歌詞與時間軸（日文另附平假名讀音）
+  → annotate     羅馬拼音、繁中翻譯、逐字拆解、文法與發音說明
+  → 網頁         在 MV 旁邊逐句學習
+                 老師示範音在第一次播放時產生，之後直接使用存好的檔案
 ```
 
 幾個設計上的重點：
@@ -51,17 +52,16 @@ YouTube 網址
 
 ## 開始使用
 
-需求：Python 3.12 以上與 [uv](https://docs.astral.sh/uv/)、Node.js 22 以上，以及一組 [Gemini API key](https://aistudio.google.com/apikey)。
+需求：[Go](https://go.dev/dl/) 1.26 以上、Node.js 22 以上，以及一組 [Gemini API key](https://aistudio.google.com/apikey)。
 
 ```bash
 git clone https://github.com/kkdai/song-lingo.git
 cd song-lingo
 cp .env.example .env        # 填入 GEMINI_API_KEY
-uv sync
 
 cd web
 npm install
-npm run dev                 # 打開 http://localhost:3000
+npm run dev                 # 會一起編譯並啟動 Go API；打開 http://localhost:3000
 ```
 
 打開網頁後按「**＋ 加入新歌**」，貼上 YouTube MV 的網址。加入一首歌大約需要一分鐘，約使用 2 次 Gemini Flash 請求，不占 TTS 額度。
@@ -73,36 +73,41 @@ npm run dev                 # 打開 http://localhost:3000
 - **✏️ 校對** 可以修改這一句。修改後按 **🔄 重新分析整首**，會更新拼音和單字拆解，使用 1 次 Flash 請求，手動改過的翻譯和校對標記都會保留。
 - 如果影片擁有者不允許在其他網站播放，影片區塊會改成顯示縮圖，並提供一個連結，在 YouTube 上從目前這一句開始播放。
 
-## 命令列腳本
+## 命令列
 
-網頁會自動執行這些腳本，不過它們也可以單獨使用：
+網頁會自動執行這些步驟，不過也可以直接用 Go 執行檔單獨執行：
 
 ```bash
-uv run transcribe.py "https://www.youtube.com/watch?v=VIDEO_ID"   # → output/VIDEO_ID.json
-uv run annotate.py output/VIDEO_ID.json                            # → output/VIDEO_ID.annotated.json
-uv run speak.py output/VIDEO_ID.annotated.json                     # 一次產生整首歌的示範音
+cd backend
+go run ./cmd/song-lingo transcribe "https://www.youtube.com/watch?v=VIDEO_ID"  # → output/VIDEO_ID.json
+go run ./cmd/song-lingo annotate ../output/VIDEO_ID.json                       # → output/VIDEO_ID.annotated.json
+go run ./cmd/song-lingo speak ../output/VIDEO_ID.annotated.json                # 一次產生整首歌的示範音
+go test ./...                                                                  # 測試
 ```
 
-`speak.py` 每段音檔用 1 次 TTS 請求，一首歌大約 50–70 次。在 Tier 1 的額度下，通常讓網頁在學習時按需產生會比較划算。
+`speak` 每段音檔用 1 次 TTS 請求，一首歌大約 50–70 次。在 Tier 1 的額度下，通常讓網頁在學習時按需產生會比較划算。
 
 ## 專案結構
 
 ```
-transcribe.py         YouTube MV → 附時間軸的歌詞
-annotate.py           拼音、翻譯、逐字拆解、說明
-speak.py              一次產生整首歌的示範音
-config/teachers.json  老師聲音的描述與語氣設定（Python 和網頁共用）
-web/                  Next.js 網頁
+backend/              Go 的 API 伺服器與命令列工具（cmd/song-lingo）
+  internal/pipeline   YouTube MV → 附時間軸的歌詞 → 拼音、翻譯、逐字拆解、說明
+  internal/tts        老師示範音
+  internal/shadow     跟讀：轉錄錄音並評分
+  internal/japanese   假名 → 羅馬拼音、漢字 → 平假名
+  internal/progress   學習進度（JSON 檔或 Firestore）
+config/teachers.json  老師聲音的描述與語氣設定
+web/                  Next.js 前端
 output/               你的歌曲、音檔與學習進度（已被 git 忽略）
 ```
 
 ## 部署（Google Cloud Run，只有你能使用）
 
-Song Lingo 在 Cloud Run 上以單一容器執行，裡面包含 Next.js 網頁和它會呼叫的 Python 處理腳本（用 uv 管理）。整個服務都鎖起來，只有你指定的 Google 帳號能使用：頁面上有完整的歌詞，而且每次產生內容都會消耗你的 Gemini 額度，所以絕對不應該公開。
+Song Lingo 在 Cloud Run 上以單一容器執行：Next.js 前端聽 `$PORT`，Go API 只聽 localhost，`/api/*` 由 Next.js 轉給它（`web/scripts/start.mjs` 同時啟動兩者，任一個結束就讓整個容器結束）。整個服務都鎖起來，只有你指定的 Google 帳號能使用：頁面上有完整的歌詞，而且每次產生內容都會消耗你的 Gemini 額度，所以絕對不應該公開。
 
 | 部分 | 設定 |
 |---|---|
-| 容器 | `Dockerfile`（Node 22 + uv/Python），由 Cloud Build 從原始碼建置 |
+| 容器 | `Dockerfile`（Go 執行檔 + Node 22），由 Cloud Build 從原始碼建置 |
 | 歌曲資料與音檔 | 私人的 Cloud Storage bucket，掛載到 `/data`（`SONG_DATA_DIR`） |
 | 學習進度 | 專用的 Firestore 資料庫（`FIRESTORE_DATABASE`），每首歌一份文件；沒有設定時（本機開發）存在 `output/progress/` |
 | API key | 放在 Secret Manager，以 `GEMINI_API_KEY` 環境變數提供 |

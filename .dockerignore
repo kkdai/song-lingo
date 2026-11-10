@@ -1,8 +1,7 @@
 .git
 .env
-.venv
-__pycache__
 output
+backend/bin
 web/node_modules
 web/.next
 web/tsconfig.tsbuildinfo
