@@ -5,15 +5,19 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/config"
 	"github.com/kkdai/song-lingo/backend/internal/pipeline"
 	"github.com/kkdai/song-lingo/backend/internal/progress"
@@ -32,8 +36,7 @@ type Server struct {
 	tts      *tts.Service
 	shadow   transcriber
 
-	audioErrors recentErrors
-	shadowGate  shadowGate
+	shadowGate shadowGate
 }
 
 // transcriber writes down what the learner said in a recording (shadow.Transcriber).
@@ -65,6 +68,13 @@ func NewProgressStore(ctx context.Context, cfg *config.Config) (progress.Store, 
 	return progress.NewFileStore(filepath.Join(cfg.DataDir, "progress")), nil
 }
 
+// Cancel tells the background pipeline jobs, and the re-annotations running inside requests, to
+// stop. Call it before http.Server.Shutdown so that shutdown isn't waiting on them.
+func (s *Server) Cancel() { s.pipeline.Cancel() }
+
+// Wait waits for the background pipeline jobs to finish, or for ctx to end.
+func (s *Server) Wait(ctx context.Context) { s.pipeline.Wait(ctx) }
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/songs", s.listSongs)
@@ -80,11 +90,37 @@ func (s *Server) Handler() http.Handler {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	// Encode first, so a failure can still be answered with a 500.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		log.Printf("[api] encoding response: %v", err)
+		http.Error(w, `{"error":"伺服器發生錯誤。"}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(v)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// maxJSONBody caps the JSON request bodies (they are a few hundred bytes in practice).
+const maxJSONBody = 64 << 10
+
+// jsonBody reads a small request body. If it is too large or unreadable it answers the request
+// and returns false.
+func jsonBody(w http.ResponseWriter, r *http.Request) (io.Reader, bool) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONBody))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			fail(w, http.StatusRequestEntityTooLarge, "請求內容太大。")
+		} else {
+			fail(w, http.StatusBadRequest, "請求格式不正確。")
+		}
+		return nil, false
+	}
+	return bytes.NewReader(raw), true
 }
 
 func fail(w http.ResponseWriter, status int, message string) {
@@ -95,6 +131,16 @@ func fail(w http.ResponseWriter, status int, message string) {
 func internalError(w http.ResponseWriter, r *http.Request, err error) {
 	log.Printf("[api] %s %s: %v", r.Method, r.URL.Path, err)
 	fail(w, http.StatusInternalServerError, "伺服器發生錯誤。")
+}
+
+// apiError answers with an *apierr.Error's status and message, or 500 for anything else.
+func apiError(w http.ResponseWriter, r *http.Request, err error) {
+	var e *apierr.Error
+	if errors.As(err, &e) {
+		fail(w, e.Status, e.Message)
+		return
+	}
+	internalError(w, r, err)
 }
 
 func logErrors(next http.Handler) http.Handler {
@@ -122,32 +168,57 @@ type songSummary struct {
 	Progress    progress.Summary `json:"progress"`
 }
 
+// listConcurrency bounds the songs read at once by listSongs.
+const listConcurrency = 8
+
+// summarize reads one song for the list; nil when its file is unreadable. A progress read that
+// fails shows the song with empty progress rather than failing the whole list.
+func (s *Server) summarize(ctx context.Context, id string) *songSummary {
+	song, err := s.songs.Read(id)
+	if err != nil {
+		return nil // a half-written or broken file shouldn't hide the other songs
+	}
+	p, err := s.progress.Read(ctx, id)
+	if err != nil {
+		log.Printf("[api] list: progress for %s: %v", id, err)
+		p = progress.Empty()
+	}
+	return &songSummary{
+		ID:          id,
+		Language:    song.Language,
+		TitleGuess:  song.TitleGuess,
+		ArtistGuess: song.ArtistGuess,
+		LineCount:   len(song.Lines),
+		HasTeacher:  s.cfg.HasTeacher(song.Language),
+		Progress:    progress.Summarize(p, song.Lines),
+	}
+}
+
 func (s *Server) listSongs(w http.ResponseWriter, r *http.Request) {
 	ids, err := s.songs.IDs()
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
+	// Songs are read concurrently (one progress read per song is a network call on Firestore);
+	// each result goes to its own slot, so the order stays that of ids.
+	results := make([]*songSummary, len(ids))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, listConcurrency)
+	for i, id := range ids {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			results[i] = s.summarize(r.Context(), id)
+		}()
+	}
+	wg.Wait()
 	summaries := []songSummary{}
-	for _, id := range ids {
-		song, err := s.songs.Read(id)
-		if err != nil {
-			continue // a half-written or broken file shouldn't hide the other songs
+	for _, summary := range results {
+		if summary != nil {
+			summaries = append(summaries, *summary)
 		}
-		p, err := s.progress.Read(r.Context(), id)
-		if err != nil {
-			internalError(w, r, err)
-			return
-		}
-		summaries = append(summaries, songSummary{
-			ID:          id,
-			Language:    song.Language,
-			TitleGuess:  song.TitleGuess,
-			ArtistGuess: song.ArtistGuess,
-			LineCount:   len(song.Lines),
-			HasTeacher:  s.cfg.HasTeacher(song.Language),
-			Progress:    progress.Summarize(p, song.Lines),
-		})
 	}
 	// Most recently studied first; songs never opened keep their order at the end.
 	studied := func(i int) string {
@@ -185,14 +256,15 @@ func (s *Server) getSong(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range song.Lines {
 		line := &song.Lines[i]
-		line.ProgressKey = progress.LineKey(line.Text)
+		hash := songs.TextHash(line.Text) // also the progress key (progress.LineKey)
+		line.ProgressKey = hash
 		if !hasTeacher {
 			continue
 		}
 		line.Audio = map[string]string{}
 		line.AudioCached = []string{}
 		for _, speed := range s.cfg.Speeds {
-			name := songs.ClipName(line.Text, speed)
+			name := songs.ClipNameForHash(hash, speed)
 			line.Audio[speed] = "/api/audio/" + id + "/" + name
 			if cached[name] {
 				line.AudioCached = append(line.AudioCached, speed)

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 
 	"google.golang.org/genai"
 
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
 )
 
@@ -33,13 +35,8 @@ type JobStatus struct {
 	StartedAt int64  `json:"startedAt,omitempty"`
 }
 
-// Error is a failure to report to the user with an HTTP status.
-type Error struct {
-	Status  int
-	Message string
-}
-
-func (e *Error) Error() string { return e.Message }
+// Error is the shared user-facing error (see apierr).
+type Error = apierr.Error
 
 // Runner runs songs through the pipeline in the background. Running and failed jobs are kept in
 // memory; once a song is done, the files on disk are the source of truth.
@@ -48,6 +45,11 @@ type Runner struct {
 	Model  string
 	Client func(ctx context.Context) (*genai.Client, error)
 
+	// base is cancelled by Shutdown; background jobs run under it and are tracked by wg.
+	base   context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
 	mu   sync.Mutex
 	jobs map[string]*JobStatus
 	// Songs being re-annotated from the review UI.
@@ -55,7 +57,35 @@ type Runner struct {
 }
 
 func NewRunner(store songs.Store, model string, client func(ctx context.Context) (*genai.Client, error)) *Runner {
-	return &Runner{Songs: store, Model: model, Client: client, jobs: map[string]*JobStatus{}, reannotating: map[string]bool{}}
+	base, cancel := context.WithCancel(context.Background())
+	return &Runner{Songs: store, Model: model, Client: client, base: base, cancel: cancel,
+		jobs: map[string]*JobStatus{}, reannotating: map[string]bool{}}
+}
+
+// baseContext is the context background work runs under.
+func (r *Runner) baseContext() context.Context {
+	if r.base == nil {
+		return context.Background()
+	}
+	return r.base
+}
+
+// Cancel cancels the context of the running jobs (and of re-annotations), so they stop soon.
+func (r *Runner) Cancel() {
+	if r.cancel != nil {
+		r.cancel()
+	}
+}
+
+// Wait waits for the background jobs to finish, or for ctx to end.
+func (r *Runner) Wait(ctx context.Context) {
+	done := make(chan struct{})
+	go func() { r.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		log.Printf("[pipeline] shutdown: jobs still running: %v", ctx.Err())
+	}
 }
 
 func exists(path string) bool {
@@ -66,9 +96,13 @@ func exists(path string) bool {
 // Status returns the job for a song, "done" for a song already on disk, or nil.
 func (r *Runner) Status(id string) *JobStatus {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if job := r.jobs[id]; job != nil {
-		copied := *job
+	job := r.jobs[id]
+	var copied JobStatus
+	if job != nil {
+		copied = *job
+	}
+	r.mu.Unlock()
+	if job != nil {
 		return &copied
 	}
 	if exists(r.Songs.AnnotatedPath(id)) {
@@ -82,24 +116,35 @@ func (r *Runner) Status(id string) *JobStatus {
 func (r *Runner) AddSong(url string) (*JobStatus, error) {
 	id, ok := ParseVideoID(url)
 	if !ok {
-		return nil, &Error{400, "看不懂這個網址，請貼上 YouTube 影片網址。"}
+		return nil, &Error{Status: 400, Message: "看不懂這個網址，請貼上 YouTube 影片網址。"}
 	}
-	if existing := r.Status(id); existing != nil && existing.Stage != StageError {
-		return existing, nil
-	}
+	// Stat outside the lock; a file appearing in between only makes this answer slightly stale.
+	annotatedOnDisk := exists(r.Songs.AnnotatedPath(id))
+	transcriptOnDisk := exists(r.Songs.TranscriptPath(id))
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if job := r.jobs[id]; (job != nil && job.Stage != StageError) || r.reannotating[id] {
+	job := r.jobs[id]
+	switch {
+	case job != nil && job.Stage != StageError:
+		copied := *job
+		return &copied, nil
+	case job == nil && annotatedOnDisk:
+		return &JobStatus{ID: id, Stage: StageDone}, nil
+	case r.reannotating[id]:
 		return &JobStatus{ID: id, Stage: StageAnnotating}, nil
 	}
-	job := &JobStatus{ID: id, Stage: StageTranscribing, StartedAt: time.Now().UnixMilli()}
-	if exists(r.Songs.TranscriptPath(id)) {
+	job = &JobStatus{ID: id, Stage: StageTranscribing, StartedAt: time.Now().UnixMilli()}
+	if transcriptOnDisk {
 		job.Stage = StageAnnotating
 	}
 	r.jobs[id] = job
 	copied := *job
-	go r.run(job)
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		r.run(job)
+	}()
 	return &copied, nil
 }
 
@@ -138,7 +183,7 @@ func (r *Runner) client(ctx context.Context) (*genai.Client, error) {
 }
 
 func (r *Runner) transcribe(id string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), StepTimeout)
+	ctx, cancel := context.WithTimeout(r.baseContext(), StepTimeout)
 	defer cancel()
 	client, err := r.client(ctx)
 	if err != nil {
@@ -152,7 +197,7 @@ func (r *Runner) transcribe(id string) error {
 }
 
 func (r *Runner) annotate(id string) (AnnotateResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), StepTimeout)
+	ctx, cancel := context.WithTimeout(r.baseContext(), StepTimeout)
 	defer cancel()
 	transcript, err := songs.ReadFile(r.Songs.TranscriptPath(id))
 	if err != nil {
@@ -166,7 +211,22 @@ func (r *Runner) annotate(id string) (AnnotateResult, error) {
 	if err != nil {
 		return result, timeoutMessage(ctx, err)
 	}
-	return result, songs.WriteFile(r.Songs.AnnotatedPath(id), annotated)
+	return result, r.saveAnnotation(id, transcript, annotated)
+}
+
+// saveAnnotation writes the annotated file under the song lock, but only if the transcript still
+// is what annotatedFrom was annotated from: the Gemini call takes minutes, and a review edit made
+// meanwhile would otherwise be overwritten by stale notes.
+func (r *Runner) saveAnnotation(id string, annotatedFrom, annotated *songs.File) error {
+	defer songs.Lock(id)()
+	current, err := songs.ReadFile(r.Songs.TranscriptPath(id))
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(current, annotatedFrom) {
+		return errors.New("分析期間歌詞被編輯過，請重新分析")
+	}
+	return songs.WriteFile(r.Songs.AnnotatedPath(id), annotated)
 }
 
 func timeoutMessage(ctx context.Context, err error) error {
@@ -182,7 +242,7 @@ func (r *Runner) Reannotate(id string) (string, error) {
 	r.mu.Lock()
 	if job := r.jobs[id]; r.reannotating[id] || (job != nil && job.Stage != StageError) {
 		r.mu.Unlock()
-		return "", &Error{409, "這首歌正在重新分析中。"}
+		return "", &Error{Status: 409, Message: "這首歌正在重新分析中。"}
 	}
 	r.reannotating[id] = true
 	r.mu.Unlock()
@@ -193,12 +253,12 @@ func (r *Runner) Reannotate(id string) (string, error) {
 	}()
 
 	if !exists(r.Songs.TranscriptPath(id)) {
-		return "", &Error{404, "找不到歌曲檔案。"}
+		return "", &Error{Status: 404, Message: "找不到歌曲檔案。"}
 	}
 	result, err := r.annotate(id)
 	if err != nil {
 		log.Printf("[pipeline] reannotate %s: %v", id, err)
-		return "", &Error{502, fmt.Sprintf("重新分析失敗：%v", err)}
+		return "", &Error{Status: 502, Message: fmt.Sprintf("重新分析失敗：%v", err)}
 	}
 	return result.String(), nil
 }

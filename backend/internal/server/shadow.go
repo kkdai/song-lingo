@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -11,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kkdai/song-lingo/backend/internal/gemini"
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/progress"
 	"github.com/kkdai/song-lingo/backend/internal/shadow"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
@@ -70,29 +71,20 @@ func (s *Server) shadowLine(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "Not found")
 		return
 	}
-	if status, message := s.shadowGate.enter(); status != 0 {
-		fail(w, status, message)
-		return
-	}
-	var quotaFor time.Duration
-	defer func() { s.shadowGate.leave(quotaFor) }()
-
-	song, err := s.songs.Read(id)
-	if err != nil || index >= len(song.Lines) {
-		fail(w, http.StatusNotFound, "找不到這一句。")
-		return
-	}
-	line := song.Lines[index]
-
+	// Validate and read the upload first: it needs neither the gate nor the song.
 	r.Body = http.MaxBytesReader(w, r.Body, maxRecordingBytes+1024*1024)
-	file, header, err := r.FormFile("audio")
-	if err != nil {
+	if err := r.ParseMultipartForm(maxRecordingBytes); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			fail(w, http.StatusRequestEntityTooLarge, "錄音太長了，請只念這一句。")
 		} else {
 			fail(w, http.StatusBadRequest, "沒有收到錄音。")
 		}
+		return
+	}
+	file, header, err := r.FormFile("audio")
+	if err != nil {
+		fail(w, http.StatusBadRequest, "沒有收到錄音。")
 		return
 	}
 	defer file.Close()
@@ -119,9 +111,24 @@ func (s *Server) shadowLine(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	song, err := s.songs.Read(id)
+	if err != nil || index >= len(song.Lines) {
+		fail(w, http.StatusNotFound, "找不到這一句。")
+		return
+	}
+	line := song.Lines[index]
+
+	// The gate covers only the paid call and what follows it.
+	if status, message := s.shadowGate.enter(); status != 0 {
+		fail(w, status, message)
+		return
+	}
+	var quotaFor time.Duration
+	defer func() { s.shadowGate.leave(quotaFor) }()
+
 	transcript, err := s.shadow.Transcribe(r.Context(), audio, mimeType, song.Language)
 	if err != nil {
-		var e *gemini.Error
+		var e *apierr.Error
 		if errors.As(err, &e) && e.Status == 429 {
 			quotaFor = max(time.Until(e.RetryAt), time.Minute)
 			fail(w, http.StatusTooManyRequests, "跟讀評分的額度已用完，請稍後再試。")
@@ -149,8 +156,11 @@ func (s *Server) shadowLine(w http.ResponseWriter, r *http.Request) {
 	}
 	// The transcription is already paid for: if saving fails, still return the score (marked
 	// unsaved) rather than an error that would make the learner record and pay again.
+	// The client may have gone by now; the paid result should still be saved.
+	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Second)
+	defer cancel()
 	saved := true
-	if _, err := s.progress.Update(r.Context(), id, func(p *progress.Progress) {
+	if _, err := s.progress.Update(saveCtx, id, func(p *progress.Progress) {
 		p.LastLine = index
 		p.AddAttempt(line.Text, attempt)
 	}); err != nil {

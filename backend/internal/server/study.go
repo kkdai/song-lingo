@@ -14,14 +14,8 @@ import (
 
 // lineIndex parses the {index} path segment; only plain digits are accepted.
 func lineIndex(r *http.Request) (int, bool) {
-	raw := r.PathValue("index")
-	for _, c := range raw {
-		if c < '0' || c > '9' {
-			return 0, false
-		}
-	}
-	i, err := strconv.Atoi(raw)
-	return i, err == nil
+	i, err := strconv.ParseUint(r.PathValue("index"), 10, 31) // plain digits only: no sign
+	return int(i), err == nil
 }
 
 // asIndex accepts a JSON number that is a whole number in [0, n).
@@ -52,7 +46,11 @@ func (s *Server) patchProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, ok := review.DecodeObject(r.Body)
+	rawBody, ok := jsonBody(w, r)
+	if !ok {
+		return
+	}
+	body, ok := review.DecodeObject(rawBody)
 	if !ok {
 		fail(w, http.StatusBadRequest, "請求格式不正確。")
 		return
@@ -109,7 +107,11 @@ func (s *Server) patchLine(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "Not found")
 		return
 	}
-	edit, err := review.ParseEdit(r.Body)
+	rawBody, ok := jsonBody(w, r)
+	if !ok {
+		return
+	}
+	edit, err := review.ParseEdit(rawBody)
 	if err == nil {
 		var updated int
 		updated, err = s.review.EditLine(r.Context(), id, index, edit)
@@ -118,10 +120,5 @@ func (s *Server) patchLine(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var re *review.Error
-	if errors.As(err, &re) {
-		fail(w, re.Status, re.Message)
-		return
-	}
-	internalError(w, r, err)
+	apiError(w, r, err)
 }

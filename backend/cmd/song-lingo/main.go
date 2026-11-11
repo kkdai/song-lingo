@@ -69,11 +69,15 @@ func serve(cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
+	app := server.New(cfg, progressStore)
 	srv := &http.Server{
 		// Localhost only: requests reach the API through Next.js, which checks access first.
 		Addr:              net.JoinHostPort("127.0.0.1", port),
-		Handler:           server.New(cfg, progressStore).Handler(),
+		Handler:           app.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
+		// No WriteTimeout: the TTS and shadow routes can legitimately take minutes.
 	}
 	errc := make(chan error, 1)
 	go func() { errc <- srv.ListenAndServe() }()
@@ -84,9 +88,14 @@ func serve(cfg *config.Config) error {
 		return err
 	case <-ctx.Done():
 	}
-	shutdown, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Cloud Run allows ~10s after SIGTERM: one deadline for all of it. Jobs are cancelled first,
+	// so neither the server shutdown nor the wait below sits out a long Gemini call.
+	shutdown, cancel := context.WithTimeout(context.Background(), 9*time.Second)
 	defer cancel()
-	if err := srv.Shutdown(shutdown); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	app.Cancel()
+	err = srv.Shutdown(shutdown)
+	app.Wait(shutdown)
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil

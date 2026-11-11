@@ -10,23 +10,21 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
+
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 )
 
 const (
 	DefaultAPIBase = "https://generativelanguage.googleapis.com/v1beta"
 	requestTimeout = 60 * time.Second
+	// DefaultRetryAfter is the backoff for a 429 that doesn't say when the quota frees up.
+	DefaultRetryAfter = time.Minute
 )
 
-// Error is a failure to report to the user with an HTTP status.
-type Error struct {
-	Status  int
-	Message string
-	// For 429s: when the API says the quota frees up again (zero if unknown).
-	RetryAt time.Time
-}
-
-func (e *Error) Error() string { return e.Message }
+// Error is the error type shared by all packages (see apierr).
+type Error = apierr.Error
 
 // API is a small client for the Gemini REST API.
 type API struct {
@@ -76,7 +74,8 @@ func (a *API) Call(ctx context.Context, method, endpoint string, body any) (map[
 			message = res.Status
 		}
 		if res.StatusCode == http.StatusTooManyRequests {
-			e := &Error{Status: 429, Message: "額度已用完：" + message}
+			e := &Error{Status: 429, Message: "額度已用完：" + message, RetryAt: time.Now().Add(DefaultRetryAfter),
+				Daily: strings.Contains(message, "per day")}
 			if s, err := strconv.Atoi(res.Header.Get("Retry-After")); err == nil && s > 0 {
 				e.RetryAt = time.Now().Add(time.Duration(s) * time.Second)
 			}

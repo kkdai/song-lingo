@@ -8,22 +8,17 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"unicode/utf16"
 
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/progress"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
 )
 
 const maxFieldLength = 500
 
-// Error is a failure to report to the user with an HTTP status.
-type Error struct {
-	Status  int
-	Message string
-}
-
-func (e *Error) Error() string { return e.Message }
+// Error is the shared user-facing error (see apierr).
+type Error = apierr.Error
 
 func errorf(status int, format string, args ...any) *Error {
 	return &Error{Status: status, Message: fmt.Sprintf(format, args...)}
@@ -97,8 +92,6 @@ func ParseEdit(body io.Reader) (Edit, error) {
 type Service struct {
 	Songs    songs.Store
 	Progress progress.Store
-	// Edits read-modify-write both song files; one at a time.
-	mu sync.Mutex
 }
 
 func readFile(path string) (*songs.File, error) {
@@ -114,8 +107,7 @@ func readFile(path string) (*songs.File, error) {
 // is re-annotated; manual translations and the reviewed flag survive re-annotation.
 // It returns how many lines were changed.
 func (s *Service) EditLine(ctx context.Context, videoID string, index int, edit Edit) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	defer songs.Lock(videoID)()
 	transcriptPath, annotatedPath := s.Songs.TranscriptPath(videoID), s.Songs.AnnotatedPath(videoID)
 	transcript, err := readFile(transcriptPath)
 	if err != nil {

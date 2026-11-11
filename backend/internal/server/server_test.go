@@ -1,10 +1,13 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"github.com/kkdai/song-lingo/backend/internal/config"
@@ -92,4 +95,57 @@ func TestGetSong(t *testing.T) {
 	if rec := do(t, s, "GET", "/api/songs/nope", ""); rec.Code != 404 {
 		t.Errorf("unknown id: %d", rec.Code)
 	}
+}
+
+// failingProgress fails the progress read of the listed songs.
+type failingProgress struct {
+	progress.Store
+	fail map[string]bool
+}
+
+func (f failingProgress) Read(ctx context.Context, id string) (*progress.Progress, error) {
+	if f.fail[id] {
+		return nil, errors.New("firestore down")
+	}
+	return f.Store.Read(ctx, id)
+}
+
+func TestListSongsOrderAndFailingProgress(t *testing.T) {
+	s, _ := newTestServer(t)
+	// Songs never studied keep their directory order, after the studied one (abcdefghijk).
+	extra := []string{"zzzzzzzzzz1", "aaaaaaaaaa1", "mmmmmmmmmm1", "bbbbbbbbbb1", "cccccccccc1", "dddddddddd1",
+		"eeeeeeeeee1", "ffffffffff1", "gggggggggg1", "hhhhhhhhhh1", "iiiiiiiiii1"}
+	for _, id := range extra {
+		if err := songs.WriteFile(s.songs.AnnotatedPath(id), &songs.File{Language: "ja", Lines: []songs.Line{{Text: id}}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.progress = failingProgress{Store: s.progress, fail: map[string]bool{songID: true, "mmmmmmmmmm1": true}}
+
+	rec := do(t, s, "GET", "/api/songs", "")
+	var got []songSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || rec.Code != 200 || len(got) != len(extra)+1 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	want := append([]string(nil), extra...)
+	want = append(want, songID)
+	sort.Strings(want) // the directory order; nobody has progress, so no one is "studied"
+	for i, g := range got {
+		if g.ID != want[i] {
+			t.Fatalf("order = %v, want %v", ids(got), want)
+		}
+	}
+	for _, g := range got {
+		if g.ID == songID && (g.Progress.Learned != 0 || g.Progress.Total != 2) {
+			t.Errorf("failed progress read: %+v", g.Progress)
+		}
+	}
+}
+
+func ids(list []songSummary) []string {
+	var out []string
+	for _, g := range list {
+		out = append(out, g.ID)
+	}
+	return out
 }

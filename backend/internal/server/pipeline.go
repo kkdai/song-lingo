@@ -2,34 +2,28 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/kkdai/song-lingo/backend/internal/pipeline"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
 )
 
-func pipelineError(w http.ResponseWriter, r *http.Request, err error) {
-	var pe *pipeline.Error
-	if errors.As(err, &pe) {
-		fail(w, pe.Status, pe.Message)
-		return
-	}
-	internalError(w, r, err)
-}
-
 // addSong starts adding a song from a YouTube URL; poll /api/songs/{id}/status for progress.
 func (s *Server) addSong(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		URL *string `json:"url"`
 	}
-	if json.NewDecoder(r.Body).Decode(&body) != nil || body.URL == nil {
+	rawBody, ok := jsonBody(w, r)
+	if !ok {
+		return
+	}
+	if json.NewDecoder(rawBody).Decode(&body) != nil || body.URL == nil {
 		fail(w, http.StatusBadRequest, "請提供 YouTube 網址。")
 		return
 	}
 	job, err := s.pipeline.AddSong(*body.URL)
 	if err != nil {
-		pipelineError(w, r, err)
+		apiError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, job)
@@ -56,7 +50,7 @@ func (s *Server) reannotate(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := s.pipeline.Reannotate(id)
 	if err != nil {
-		pipelineError(w, r, err)
+		apiError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"summary": summary})

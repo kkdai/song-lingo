@@ -141,3 +141,46 @@ func TestAudioRejectsBadNames(t *testing.T) {
 		t.Errorf("?error on bad name: %d", rec.Code)
 	}
 }
+
+func TestAudioServesCachedClipFromDisk(t *testing.T) {
+	s, cfg := newTestServer(t)
+	calls := fakeTTS(t, s, audioOK)
+	name := songs.ClipName("君", "slow") // written by newTestServer: "RIFF"
+	path := "/api/audio/" + songID + "/" + name
+
+	rec := do(t, s, "GET", path, "")
+	if rec.Code != 200 || rec.Body.String() != "RIFF" || rec.Header().Get("Content-Type") != "audio/wav" ||
+		rec.Header().Get("Last-Modified") == "" || rec.Header().Get("Cache-Control") == "" {
+		t.Fatalf("%d %q %v", rec.Code, rec.Body, rec.Header())
+	}
+
+	req := httptest.NewRequest("GET", path, nil)
+	req.Header.Set("Range", "bytes=1-2")
+	rr := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != 206 || rr.Body.String() != "IF" || rr.Header().Get("Content-Range") != "bytes 1-2/4" {
+		t.Errorf("range: %d %q %v", rr.Code, rr.Body, rr.Header())
+	}
+
+	// A conditional request with the modtime it was served with gets a 304.
+	req = httptest.NewRequest("GET", path, nil)
+	req.Header.Set("If-Modified-Since", rec.Header().Get("Last-Modified"))
+	rr = httptest.NewRecorder()
+	s.Handler().ServeHTTP(rr, req)
+	if rr.Code != 304 {
+		t.Errorf("conditional: %d", rr.Code)
+	}
+	if calls.Load() != 0 {
+		t.Error("cached clip generated")
+	}
+	_ = cfg
+}
+
+func TestAudioErrorResponsesAreNotCacheable(t *testing.T) {
+	s, _ := newTestServer(t)
+	fakeTTS(t, s, func(w http.ResponseWriter) { w.WriteHeader(500) })
+	rec := do(t, s, "GET", "/api/audio/"+songID+"/"+songs.ClipName("僕", "slow"), "")
+	if rec.Code != 502 || rec.Header().Get("Cache-Control") != "" {
+		t.Errorf("%d %v", rec.Code, rec.Header())
+	}
+}

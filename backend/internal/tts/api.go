@@ -9,12 +9,13 @@ import (
 	"encoding/binary"
 	"log"
 
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/gemini"
 )
 
 // Error and API are shared with the rest of the Gemini REST calls.
 type (
-	Error = gemini.Error
+	Error = apierr.Error
 	API   = gemini.API
 )
 
@@ -62,20 +63,22 @@ func ToWAV(audio []byte, sampleRate int) []byte {
 	if bytes.HasPrefix(audio, []byte("RIFF")) {
 		return audio
 	}
-	var h bytes.Buffer
-	h.WriteString("RIFF")
-	binary.Write(&h, binary.LittleEndian, uint32(36+len(audio)))
-	h.WriteString("WAVEfmt ")
-	binary.Write(&h, binary.LittleEndian, uint32(16))
-	binary.Write(&h, binary.LittleEndian, uint16(1)) // PCM
-	binary.Write(&h, binary.LittleEndian, uint16(1)) // mono
-	binary.Write(&h, binary.LittleEndian, uint32(sampleRate))
-	binary.Write(&h, binary.LittleEndian, uint32(sampleRate*2))
-	binary.Write(&h, binary.LittleEndian, uint16(2))
-	binary.Write(&h, binary.LittleEndian, uint16(16))
-	h.WriteString("data")
-	binary.Write(&h, binary.LittleEndian, uint32(len(audio)))
-	return append(h.Bytes(), audio...)
+	wav := make([]byte, 44+len(audio))
+	le := binary.LittleEndian
+	copy(wav[0:], "RIFF")
+	le.PutUint32(wav[4:], uint32(36+len(audio)))
+	copy(wav[8:], "WAVEfmt ")
+	le.PutUint32(wav[16:], 16)                   // fmt chunk size
+	le.PutUint16(wav[20:], 1)                    // PCM
+	le.PutUint16(wav[22:], 1)                    // mono
+	le.PutUint32(wav[24:], uint32(sampleRate))   // sample rate
+	le.PutUint32(wav[28:], uint32(sampleRate*2)) // byte rate
+	le.PutUint16(wav[32:], 2)                    // block align
+	le.PutUint16(wav[34:], 16)                   // bits per sample
+	copy(wav[36:], "data")
+	le.PutUint32(wav[40:], uint32(len(audio)))
+	copy(wav[44:], audio)
+	return wav
 }
 
 // Synthesize reads one line aloud in the given voice and speaking style.
