@@ -31,6 +31,7 @@ export default async function Home() {
             <li key={song.id}>
               <Link
                 href={`/songs/${song.id}`}
+                prefetch={false}
                 className="flex gap-3 rounded-xl border border-stone-200 bg-white p-3 transition hover:border-stone-400 hover:shadow-sm dark:border-stone-800 dark:bg-stone-900 dark:hover:border-stone-600"
               >
                 {/* eslint-disable-next-line @next/next/no-img-element */}

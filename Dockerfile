@@ -14,7 +14,7 @@ COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/ ./
 # BACKEND_URL is baked into the /api rewrite at build time; the default matches BACKEND_PORT below.
-RUN npm run build
+RUN mkdir -p public && npm run build
 
 FROM node:22-slim
 # Go reads the system CA bundle for HTTPS (Node ships its own).
@@ -22,10 +22,14 @@ COPY --from=backend /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=backend /out/song-lingo /usr/local/bin/song-lingo
 WORKDIR /app
 COPY config/ config/
-COPY --from=web /app/web web/
+COPY --from=web /app/web/.next/standalone web/
+COPY --from=web /app/web/.next/static web/.next/static
+COPY --from=web /app/web/public web/public
+COPY --from=web /app/web/scripts web/scripts
 WORKDIR /app/web
 
 ENV NODE_ENV=production \
+    HOSTNAME=0.0.0.0 \
     SONG_LINGO_ROOT=/app \
     SONG_DATA_DIR=/data \
     BACKEND_PORT=8081 \

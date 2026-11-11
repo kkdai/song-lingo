@@ -160,8 +160,9 @@ gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION \
   --set-secrets=GEMINI_API_KEY=song-lingo-gemini-api-key:latest \
   --set-env-vars=ALLOWED_EMAILS=you@gmail.com,IAP_AUDIENCE=/projects/PROJECT_NUMBER/locations/REGION/services/song-lingo,FIRESTORE_DATABASE=song-lingo \
   --max-instances=1 --min-instances=0 --no-cpu-throttling \
-  --execution-environment=gen2 --memory=1Gi --cpu=1 --timeout=600 \
-  --add-volume=name=data,type=cloud-storage,bucket=BUCKET \
+  --execution-environment=gen2 --memory=512Mi --cpu=1 --timeout=600 \
+  --add-volume=name=gcs-cache,type=in-memory,size-limit=128Mi \
+  --add-volume=name=data,type=cloud-storage,bucket=BUCKET,mount-options="cache-dir=cr-volume:gcs-cache;file-cache-max-size-mb=100;file-cache-cache-file-for-range-read=true;metadata-cache-ttl-secs=300" \
   --add-volume-mount=volume=data,mount-path=/data
 
 # 5. 允許你的帳號通過 IAP
@@ -206,7 +207,7 @@ rm /tmp/iap-oauth.yaml
 
 另外也建議：把 API key 限制成只能呼叫 Generative Language API，並設定帳單的預算警示。
 
-修改程式後重新部署，執行 `gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION` 即可，其他設定都會沿用。要注意 bucket 和本機的 `output/` 是兩份各自獨立的資料，需要時可以用 `gcloud storage rsync` 在兩者之間同步。
+修改程式後重新部署，執行 `gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION` 即可，其他設定都會沿用。要注意 bucket 和本機的 `output/` 是兩份各自獨立的資料，需要時可以用 `gcloud storage rsync` 在兩者之間同步（因為 gcsfuse 設了 `metadata-cache-ttl-secs=300` 快取目錄與檔案資訊 5 分鐘，從其他地方 `rsync` 到 bucket 的檔案最多可能要 5 分鐘才會出現）。
 
 ## 未來規劃
 
