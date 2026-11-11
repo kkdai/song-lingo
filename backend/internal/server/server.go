@@ -32,8 +32,7 @@ type Server struct {
 	tts      *tts.Service
 	shadow   transcriber
 
-	audioErrors recentErrors
-	shadowGate  shadowGate
+	shadowGate shadowGate
 }
 
 // transcriber writes down what the learner said in a recording (shadow.Transcriber).

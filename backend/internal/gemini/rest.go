@@ -16,13 +16,15 @@ import (
 const (
 	DefaultAPIBase = "https://generativelanguage.googleapis.com/v1beta"
 	requestTimeout = 60 * time.Second
+	// DefaultRetryAfter is the backoff for a 429 that doesn't say when the quota frees up.
+	DefaultRetryAfter = time.Minute
 )
 
 // Error is a failure to report to the user with an HTTP status.
 type Error struct {
 	Status  int
 	Message string
-	// For 429s: when the API says the quota frees up again (zero if unknown).
+	// For 429s: when the quota frees up again (the API's Retry-After, else DefaultRetryAfter).
 	RetryAt time.Time
 }
 
@@ -76,7 +78,7 @@ func (a *API) Call(ctx context.Context, method, endpoint string, body any) (map[
 			message = res.Status
 		}
 		if res.StatusCode == http.StatusTooManyRequests {
-			e := &Error{Status: 429, Message: "額度已用完：" + message}
+			e := &Error{Status: 429, Message: "額度已用完：" + message, RetryAt: time.Now().Add(DefaultRetryAfter)}
 			if s, err := strconv.Atoi(res.Header.Get("Retry-After")); err == nil && s > 0 {
 				e.RetryAt = time.Now().Add(time.Duration(s) * time.Second)
 			}
