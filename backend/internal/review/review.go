@@ -10,19 +10,15 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/progress"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
 )
 
 const maxFieldLength = 500
 
-// Error is a failure to report to the user with an HTTP status.
-type Error struct {
-	Status  int
-	Message string
-}
-
-func (e *Error) Error() string { return e.Message }
+// Error is the shared user-facing error (see apierr).
+type Error = apierr.Error
 
 func errorf(status int, format string, args ...any) *Error {
 	return &Error{Status: status, Message: fmt.Sprintf(format, args...)}

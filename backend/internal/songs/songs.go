@@ -86,7 +86,10 @@ func TextHash(text string) string {
 	return hex.EncodeToString(sum[:])[:16]
 }
 
-func ClipName(text, speed string) string { return TextHash(text) + "_" + speed + ".wav" }
+func ClipName(text, speed string) string { return ClipNameForHash(TextHash(text), speed) }
+
+// ClipNameForHash is ClipName for a text whose TextHash is already known.
+func ClipNameForHash(hash, speed string) string { return hash + "_" + speed + ".wav" }
 
 // UniqueTexts returns each distinct line text once, in order of first appearance.
 func UniqueTexts(lines []Line) []string {

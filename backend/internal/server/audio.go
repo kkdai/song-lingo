@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
-	"github.com/kkdai/song-lingo/backend/internal/tts"
 )
 
 // audio serves a teacher clip, generating it on first request. `?error` instead reports why the
@@ -40,15 +40,11 @@ func (s *Server) audio(w http.ResponseWriter, r *http.Request) {
 
 	data, err := s.tts.Clip(r.Context(), id, file)
 	if err != nil {
-		var e *tts.Error
-		if !errors.As(err, &e) {
-			if r.Context().Err() != nil {
-				return // the browser gave up; the clip is still generated and cached
-			}
-			internalError(w, r, err)
-			return
+		var e *apierr.Error
+		if !errors.As(err, &e) && r.Context().Err() != nil {
+			return // the browser gave up; the clip is still generated and cached
 		}
-		fail(w, e.Status, e.Message)
+		apiError(w, r, err)
 		return
 	}
 

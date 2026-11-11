@@ -17,6 +17,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/config"
 	"github.com/kkdai/song-lingo/backend/internal/pipeline"
 	"github.com/kkdai/song-lingo/backend/internal/progress"
@@ -132,6 +133,16 @@ func internalError(w http.ResponseWriter, r *http.Request, err error) {
 	fail(w, http.StatusInternalServerError, "伺服器發生錯誤。")
 }
 
+// apiError answers with an *apierr.Error's status and message, or 500 for anything else.
+func apiError(w http.ResponseWriter, r *http.Request, err error) {
+	var e *apierr.Error
+	if errors.As(err, &e) {
+		fail(w, e.Status, e.Message)
+		return
+	}
+	internalError(w, r, err)
+}
+
 func logErrors(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
@@ -245,14 +256,15 @@ func (s *Server) getSong(w http.ResponseWriter, r *http.Request) {
 	}
 	for i := range song.Lines {
 		line := &song.Lines[i]
-		line.ProgressKey = progress.LineKey(line.Text)
+		hash := songs.TextHash(line.Text) // also the progress key (progress.LineKey)
+		line.ProgressKey = hash
 		if !hasTeacher {
 			continue
 		}
 		line.Audio = map[string]string{}
 		line.AudioCached = []string{}
 		for _, speed := range s.cfg.Speeds {
-			name := songs.ClipName(line.Text, speed)
+			name := songs.ClipNameForHash(hash, speed)
 			line.Audio[speed] = "/api/audio/" + id + "/" + name
 			if cached[name] {
 				line.AudioCached = append(line.AudioCached, speed)

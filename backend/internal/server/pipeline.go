@@ -2,21 +2,11 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"net/http"
 
 	"github.com/kkdai/song-lingo/backend/internal/pipeline"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
 )
-
-func pipelineError(w http.ResponseWriter, r *http.Request, err error) {
-	var pe *pipeline.Error
-	if errors.As(err, &pe) {
-		fail(w, pe.Status, pe.Message)
-		return
-	}
-	internalError(w, r, err)
-}
 
 // addSong starts adding a song from a YouTube URL; poll /api/songs/{id}/status for progress.
 func (s *Server) addSong(w http.ResponseWriter, r *http.Request) {
@@ -33,7 +23,7 @@ func (s *Server) addSong(w http.ResponseWriter, r *http.Request) {
 	}
 	job, err := s.pipeline.AddSong(*body.URL)
 	if err != nil {
-		pipelineError(w, r, err)
+		apiError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusAccepted, job)
@@ -60,7 +50,7 @@ func (s *Server) reannotate(w http.ResponseWriter, r *http.Request) {
 	}
 	summary, err := s.pipeline.Reannotate(id)
 	if err != nil {
-		pipelineError(w, r, err)
+		apiError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"summary": summary})

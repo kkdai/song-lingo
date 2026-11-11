@@ -41,3 +41,20 @@ func TestRateLimitUsesRetryAfter(t *testing.T) {
 		t.Errorf("RetryAt in %v, want about 120s", d)
 	}
 }
+
+func TestDailyQuotaIsTyped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"Quota exceeded for requests per day"}}`))
+	}))
+	defer srv.Close()
+	api := &API{Base: srv.URL, APIKey: func() (string, error) { return "k", nil }}
+	_, err := api.Call(context.Background(), "POST", "x", nil)
+	var e *Error
+	if !errors.As(err, &e) || !e.Daily {
+		t.Errorf("err = %v, want Daily 429", err)
+	}
+	if e := call429(t, ""); e.Daily {
+		t.Error("an ordinary 429 is not a daily quota")
+	}
+}

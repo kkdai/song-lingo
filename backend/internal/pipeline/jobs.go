@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/genai"
 
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
 )
 
@@ -34,13 +35,8 @@ type JobStatus struct {
 	StartedAt int64  `json:"startedAt,omitempty"`
 }
 
-// Error is a failure to report to the user with an HTTP status.
-type Error struct {
-	Status  int
-	Message string
-}
-
-func (e *Error) Error() string { return e.Message }
+// Error is the shared user-facing error (see apierr).
+type Error = apierr.Error
 
 // Runner runs songs through the pipeline in the background. Running and failed jobs are kept in
 // memory; once a song is done, the files on disk are the source of truth.
@@ -120,7 +116,7 @@ func (r *Runner) Status(id string) *JobStatus {
 func (r *Runner) AddSong(url string) (*JobStatus, error) {
 	id, ok := ParseVideoID(url)
 	if !ok {
-		return nil, &Error{400, "看不懂這個網址，請貼上 YouTube 影片網址。"}
+		return nil, &Error{Status: 400, Message: "看不懂這個網址，請貼上 YouTube 影片網址。"}
 	}
 	// Stat outside the lock; a file appearing in between only makes this answer slightly stale.
 	annotatedOnDisk := exists(r.Songs.AnnotatedPath(id))
@@ -246,7 +242,7 @@ func (r *Runner) Reannotate(id string) (string, error) {
 	r.mu.Lock()
 	if job := r.jobs[id]; r.reannotating[id] || (job != nil && job.Stage != StageError) {
 		r.mu.Unlock()
-		return "", &Error{409, "這首歌正在重新分析中。"}
+		return "", &Error{Status: 409, Message: "這首歌正在重新分析中。"}
 	}
 	r.reannotating[id] = true
 	r.mu.Unlock()
@@ -257,12 +253,12 @@ func (r *Runner) Reannotate(id string) (string, error) {
 	}()
 
 	if !exists(r.Songs.TranscriptPath(id)) {
-		return "", &Error{404, "找不到歌曲檔案。"}
+		return "", &Error{Status: 404, Message: "找不到歌曲檔案。"}
 	}
 	result, err := r.annotate(id)
 	if err != nil {
 		log.Printf("[pipeline] reannotate %s: %v", id, err)
-		return "", &Error{502, fmt.Sprintf("重新分析失敗：%v", err)}
+		return "", &Error{Status: 502, Message: fmt.Sprintf("重新分析失敗：%v", err)}
 	}
 	return result.String(), nil
 }

@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kkdai/song-lingo/backend/internal/gemini"
+	"github.com/kkdai/song-lingo/backend/internal/apierr"
 	"github.com/kkdai/song-lingo/backend/internal/progress"
 	"github.com/kkdai/song-lingo/backend/internal/shadow"
 	"github.com/kkdai/song-lingo/backend/internal/songs"
@@ -128,7 +128,7 @@ func (s *Server) shadowLine(w http.ResponseWriter, r *http.Request) {
 
 	transcript, err := s.shadow.Transcribe(r.Context(), audio, mimeType, song.Language)
 	if err != nil {
-		var e *gemini.Error
+		var e *apierr.Error
 		if errors.As(err, &e) && e.Status == 429 {
 			quotaFor = max(time.Until(e.RetryAt), time.Minute)
 			fail(w, http.StatusTooManyRequests, "跟讀評分的額度已用完，請稍後再試。")

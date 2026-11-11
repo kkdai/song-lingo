@@ -314,19 +314,26 @@ func (s *Service) synthesizeClip(ctx context.Context, videoID, path, hash, speed
 	if text == "" {
 		return nil, &Error{Status: 404, Message: "Not found"}
 	}
-	voice, err := s.TeacherVoice(ctx, song.Language)
+	audio, err := s.synthesizeText(ctx, song.Language, text, speed)
+	if err != nil {
+		return nil, err
+	}
+	if err := songs.WriteAtomic(path, audio); err != nil {
+		return nil, err
+	}
+	return audio, nil
+}
+
+// synthesizeText reads one line aloud in the language's teacher voice at the given speed. It is
+// the one path to a clip, for the server and for the batch generation of the CLI.
+func (s *Service) synthesizeText(ctx context.Context, language, text, speed string) ([]byte, error) {
+	voice, err := s.TeacherVoice(ctx, language)
 	if err != nil {
 		return nil, ttsMessage(err)
 	}
 	audio, err := Synthesize(ctx, s.API, s.Cfg.TTSModel, voice, text, s.Cfg.Styles[speed])
 	if err != nil {
 		return nil, ttsMessage(err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
-	}
-	if err := songs.WriteAtomic(path, audio); err != nil {
-		return nil, err
 	}
 	return audio, nil
 }
