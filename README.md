@@ -159,8 +159,9 @@ gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION \
   --set-secrets=GEMINI_API_KEY=song-lingo-gemini-api-key:latest \
   --set-env-vars=ALLOWED_EMAILS=you@gmail.com,IAP_AUDIENCE=/projects/PROJECT_NUMBER/locations/REGION/services/song-lingo,FIRESTORE_DATABASE=song-lingo \
   --max-instances=1 --min-instances=0 --no-cpu-throttling \
-  --execution-environment=gen2 --memory=1Gi --cpu=1 --timeout=600 \
-  --add-volume=name=data,type=cloud-storage,bucket=BUCKET \
+  --execution-environment=gen2 --memory=512Mi --cpu=1 --timeout=600 \
+  --add-volume=name=gcs-cache,type=in-memory,size-limit=128Mi \
+  --add-volume=name=data,type=cloud-storage,bucket=BUCKET,mount-options="cache-dir=cr-volume:gcs-cache;file-cache-max-size-mb=100;file-cache-cache-file-for-range-read=true;metadata-cache-ttl-secs=300" \
   --add-volume-mount=volume=data,mount-path=/data
 
 # 5. Let your account through IAP
@@ -205,7 +206,7 @@ rm /tmp/iap-oauth.yaml
 
 Also worth doing: restrict the API key to the Generative Language API, and set a billing budget alert.
 
-To redeploy after code changes, `gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION` reuses the existing settings. Note that the bucket and your local `output/` are separate copies; use `gcloud storage rsync` to move data between them.
+To redeploy after code changes, `gcloud run deploy song-lingo --source . --project=PROJECT_ID --region=REGION` reuses the existing settings. Note that the bucket and your local `output/` are separate copies; use `gcloud storage rsync` to move data between them (because gcsfuse caches bucket metadata for 5 minutes with `metadata-cache-ttl-secs=300`, files rsynced to the bucket from elsewhere can take up to 5 minutes to show up).
 
 ## Roadmap
 
