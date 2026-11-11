@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"reflect"
 	"sync"
 	"time"
 
@@ -166,7 +167,22 @@ func (r *Runner) annotate(id string) (AnnotateResult, error) {
 	if err != nil {
 		return result, timeoutMessage(ctx, err)
 	}
-	return result, songs.WriteFile(r.Songs.AnnotatedPath(id), annotated)
+	return result, r.saveAnnotation(id, transcript, annotated)
+}
+
+// saveAnnotation writes the annotated file under the song lock, but only if the transcript still
+// is what annotatedFrom was annotated from: the Gemini call takes minutes, and a review edit made
+// meanwhile would otherwise be overwritten by stale notes.
+func (r *Runner) saveAnnotation(id string, annotatedFrom, annotated *songs.File) error {
+	defer songs.Lock(id)()
+	current, err := songs.ReadFile(r.Songs.TranscriptPath(id))
+	if err != nil {
+		return err
+	}
+	if !reflect.DeepEqual(current, annotatedFrom) {
+		return errors.New("分析期間歌詞被編輯過，請重新分析")
+	}
+	return songs.WriteFile(r.Songs.AnnotatedPath(id), annotated)
 }
 
 func timeoutMessage(ctx context.Context, err error) error {

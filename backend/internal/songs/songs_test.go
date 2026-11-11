@@ -1,6 +1,7 @@
 package songs
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -43,5 +44,29 @@ func TestRoundTripKeepsFields(t *testing.T) {
 	}
 	if _, err := ReadFile(filepath.Join(t.TempDir(), "missing.json")); err != ErrNotFound {
 		t.Errorf("missing file: %v", err)
+	}
+}
+
+func TestWriteAtomic(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "missing", "sub")
+	path := filepath.Join(dir, "a.json")
+	if err := WriteAtomic(path, []byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteAtomic(path, []byte("y")); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("mode = %v, want 0644", info.Mode().Perm())
+	}
+	if got, _ := os.ReadFile(path); string(got) != "y" {
+		t.Errorf("content = %q", got)
+	}
+	if tmps, _ := filepath.Glob(filepath.Join(dir, "*.tmp")); len(tmps) != 0 {
+		t.Errorf("leftover temp files: %v", tmps)
 	}
 }

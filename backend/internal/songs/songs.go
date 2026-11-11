@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -124,9 +125,6 @@ func ReadFile(path string) (*File, error) {
 
 // WriteFile writes a song file atomically (tmp + rename).
 func WriteFile(path string, f *File) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
 	return WriteAtomic(path, MarshalIndent(f))
 }
 
@@ -142,12 +140,32 @@ func MarshalIndent(v any) []byte {
 	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
+// WriteAtomic writes data to path via a unique temp file in the same directory plus a rename,
+// creating the parent directory if needed. The temp file is removed on failure.
 func WriteAtomic(path string, data []byte) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	_, err = tmp.Write(data)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Chmod(name, 0o644)
+	}
+	if err == nil {
+		err = os.Rename(name, path)
+	}
+	if err != nil {
+		os.Remove(name)
+	}
+	return err
 }
 
 // Read returns an annotated song, or ErrNotFound.
@@ -189,4 +207,16 @@ func (s Store) CachedClips(id string) map[string]bool {
 		cached[e.Name()] = true
 	}
 	return cached
+}
+
+var songLocks sync.Map // video ID -> *sync.Mutex
+
+// Lock takes the song's lock and returns the function that releases it. Everything that
+// read-modify-writes a song's files (review edits, re-annotation) holds it around that step.
+// Don't hold it across slow calls such as Gemini requests.
+func Lock(id string) (unlock func()) {
+	m, _ := songLocks.LoadOrStore(id, &sync.Mutex{})
+	mu := m.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -153,5 +154,36 @@ func TestReannotateKeepsEdits(t *testing.T) {
 	}
 	if _, err := r.Reannotate("zzzzzzzzzzz"); err == nil || err.(*Error).Status != 404 {
 		t.Errorf("missing song: %v", err)
+	}
+}
+
+func TestSaveAnnotation(t *testing.T) {
+	r := &Runner{Songs: songs.Store{Dir: t.TempDir()}}
+	id := "dQw4w9WgXcQ"
+	transcript := &songs.File{Language: "ja", Lines: []songs.Line{{Text: "a"}}}
+	if err := songs.WriteFile(r.Songs.TranscriptPath(id), transcript); err != nil {
+		t.Fatal(err)
+	}
+	annotated := &songs.File{Language: "ja", Lines: []songs.Line{{Text: "a", TranslationZh: ptr("A")}}}
+
+	// Edited meanwhile: nothing is written.
+	edited := &songs.File{Language: "ja", Lines: []songs.Line{{Text: "b"}}}
+	if err := songs.WriteFile(r.Songs.TranscriptPath(id), edited); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.saveAnnotation(id, transcript, annotated); err == nil {
+		t.Fatal("expected a conflict error")
+	}
+	if _, err := os.Stat(r.Songs.AnnotatedPath(id)); !os.IsNotExist(err) {
+		t.Errorf("annotated file written despite conflict (err=%v)", err)
+	}
+
+	// Unchanged: written.
+	if err := r.saveAnnotation(id, edited, annotated); err != nil {
+		t.Fatal(err)
+	}
+	got, err := songs.ReadFile(r.Songs.AnnotatedPath(id))
+	if err != nil || got.Lines[0].TranslationZh == nil || *got.Lines[0].TranslationZh != "A" {
+		t.Errorf("annotated = %+v, err = %v", got, err)
 	}
 }
