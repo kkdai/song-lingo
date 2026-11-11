@@ -52,7 +52,11 @@ func (s *Server) patchProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, ok := review.DecodeObject(r.Body)
+	rawBody, ok := jsonBody(w, r)
+	if !ok {
+		return
+	}
+	body, ok := review.DecodeObject(rawBody)
 	if !ok {
 		fail(w, http.StatusBadRequest, "請求格式不正確。")
 		return
@@ -109,7 +113,11 @@ func (s *Server) patchLine(w http.ResponseWriter, r *http.Request) {
 		fail(w, http.StatusNotFound, "Not found")
 		return
 	}
-	edit, err := review.ParseEdit(r.Body)
+	rawBody, ok := jsonBody(w, r)
+	if !ok {
+		return
+	}
+	edit, err := review.ParseEdit(rawBody)
 	if err == nil {
 		var updated int
 		updated, err = s.review.EditLine(r.Context(), id, index, edit)

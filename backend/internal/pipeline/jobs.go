@@ -49,6 +49,11 @@ type Runner struct {
 	Model  string
 	Client func(ctx context.Context) (*genai.Client, error)
 
+	// base is cancelled by Shutdown; background jobs run under it and are tracked by wg.
+	base   context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+
 	mu   sync.Mutex
 	jobs map[string]*JobStatus
 	// Songs being re-annotated from the review UI.
@@ -56,7 +61,35 @@ type Runner struct {
 }
 
 func NewRunner(store songs.Store, model string, client func(ctx context.Context) (*genai.Client, error)) *Runner {
-	return &Runner{Songs: store, Model: model, Client: client, jobs: map[string]*JobStatus{}, reannotating: map[string]bool{}}
+	base, cancel := context.WithCancel(context.Background())
+	return &Runner{Songs: store, Model: model, Client: client, base: base, cancel: cancel,
+		jobs: map[string]*JobStatus{}, reannotating: map[string]bool{}}
+}
+
+// baseContext is the context background work runs under.
+func (r *Runner) baseContext() context.Context {
+	if r.base == nil {
+		return context.Background()
+	}
+	return r.base
+}
+
+// Cancel cancels the context of the running jobs (and of re-annotations), so they stop soon.
+func (r *Runner) Cancel() {
+	if r.cancel != nil {
+		r.cancel()
+	}
+}
+
+// Wait waits for the background jobs to finish, or for ctx to end.
+func (r *Runner) Wait(ctx context.Context) {
+	done := make(chan struct{})
+	go func() { r.wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-ctx.Done():
+		log.Printf("[pipeline] shutdown: jobs still running: %v", ctx.Err())
+	}
 }
 
 func exists(path string) bool {
@@ -67,9 +100,13 @@ func exists(path string) bool {
 // Status returns the job for a song, "done" for a song already on disk, or nil.
 func (r *Runner) Status(id string) *JobStatus {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if job := r.jobs[id]; job != nil {
-		copied := *job
+	job := r.jobs[id]
+	var copied JobStatus
+	if job != nil {
+		copied = *job
+	}
+	r.mu.Unlock()
+	if job != nil {
 		return &copied
 	}
 	if exists(r.Songs.AnnotatedPath(id)) {
@@ -85,22 +122,33 @@ func (r *Runner) AddSong(url string) (*JobStatus, error) {
 	if !ok {
 		return nil, &Error{400, "看不懂這個網址，請貼上 YouTube 影片網址。"}
 	}
-	if existing := r.Status(id); existing != nil && existing.Stage != StageError {
-		return existing, nil
-	}
+	// Stat outside the lock; a file appearing in between only makes this answer slightly stale.
+	annotatedOnDisk := exists(r.Songs.AnnotatedPath(id))
+	transcriptOnDisk := exists(r.Songs.TranscriptPath(id))
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if job := r.jobs[id]; (job != nil && job.Stage != StageError) || r.reannotating[id] {
+	job := r.jobs[id]
+	switch {
+	case job != nil && job.Stage != StageError:
+		copied := *job
+		return &copied, nil
+	case job == nil && annotatedOnDisk:
+		return &JobStatus{ID: id, Stage: StageDone}, nil
+	case r.reannotating[id]:
 		return &JobStatus{ID: id, Stage: StageAnnotating}, nil
 	}
-	job := &JobStatus{ID: id, Stage: StageTranscribing, StartedAt: time.Now().UnixMilli()}
-	if exists(r.Songs.TranscriptPath(id)) {
+	job = &JobStatus{ID: id, Stage: StageTranscribing, StartedAt: time.Now().UnixMilli()}
+	if transcriptOnDisk {
 		job.Stage = StageAnnotating
 	}
 	r.jobs[id] = job
 	copied := *job
-	go r.run(job)
+	r.wg.Add(1)
+	go func() {
+		defer r.wg.Done()
+		r.run(job)
+	}()
 	return &copied, nil
 }
 
@@ -139,7 +187,7 @@ func (r *Runner) client(ctx context.Context) (*genai.Client, error) {
 }
 
 func (r *Runner) transcribe(id string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), StepTimeout)
+	ctx, cancel := context.WithTimeout(r.baseContext(), StepTimeout)
 	defer cancel()
 	client, err := r.client(ctx)
 	if err != nil {
@@ -153,7 +201,7 @@ func (r *Runner) transcribe(id string) error {
 }
 
 func (r *Runner) annotate(id string) (AnnotateResult, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), StepTimeout)
+	ctx, cancel := context.WithTimeout(r.baseContext(), StepTimeout)
 	defer cancel()
 	transcript, err := songs.ReadFile(r.Songs.TranscriptPath(id))
 	if err != nil {

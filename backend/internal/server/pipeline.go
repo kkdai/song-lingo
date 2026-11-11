@@ -23,7 +23,11 @@ func (s *Server) addSong(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		URL *string `json:"url"`
 	}
-	if json.NewDecoder(r.Body).Decode(&body) != nil || body.URL == nil {
+	rawBody, ok := jsonBody(w, r)
+	if !ok {
+		return
+	}
+	if json.NewDecoder(rawBody).Decode(&body) != nil || body.URL == nil {
 		fail(w, http.StatusBadRequest, "請提供 YouTube 網址。")
 		return
 	}

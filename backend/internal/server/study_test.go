@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/kkdai/song-lingo/backend/internal/progress"
@@ -86,5 +87,18 @@ func TestPatchLineApplyToSame(t *testing.T) {
 	rec := do(t, s, "PATCH", "/api/songs/"+songID+"/lines/0", `{"text":"君だ","applyToSame":true}`)
 	if rec.Body.String() != "{\"updated\":2}\n" {
 		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestOversizedJSONBodyIs413(t *testing.T) {
+	s, _ := newTestServer(t)
+	big := `{"text":"` + strings.Repeat("a", maxJSONBody) + `"}`
+	for _, path := range []string{"/api/songs/" + songID + "/lines/0", "/api/songs/" + songID + "/progress"} {
+		if rec := do(t, s, "PATCH", path, big); rec.Code != 413 {
+			t.Errorf("%s: %d %s", path, rec.Code, rec.Body)
+		}
+	}
+	if rec := do(t, s, "POST", "/api/songs", `{"url":"`+strings.Repeat("a", maxJSONBody)+`"}`); rec.Code != 413 {
+		t.Errorf("POST /api/songs: %d", rec.Code)
 	}
 }

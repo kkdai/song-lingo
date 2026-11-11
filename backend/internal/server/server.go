@@ -5,9 +5,11 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -64,6 +66,13 @@ func NewProgressStore(ctx context.Context, cfg *config.Config) (progress.Store, 
 	return progress.NewFileStore(filepath.Join(cfg.DataDir, "progress")), nil
 }
 
+// Cancel tells the background pipeline jobs, and the re-annotations running inside requests, to
+// stop. Call it before http.Server.Shutdown so that shutdown isn't waiting on them.
+func (s *Server) Cancel() { s.pipeline.Cancel() }
+
+// Wait waits for the background pipeline jobs to finish, or for ctx to end.
+func (s *Server) Wait(ctx context.Context) { s.pipeline.Wait(ctx) }
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/songs", s.listSongs)
@@ -79,11 +88,37 @@ func (s *Server) Handler() http.Handler {
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
+	// Encode first, so a failure can still be answered with a 500.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		log.Printf("[api] encoding response: %v", err)
+		http.Error(w, `{"error":"伺服器發生錯誤。"}`, http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	enc := json.NewEncoder(w)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(v)
+	_, _ = w.Write(buf.Bytes())
+}
+
+// maxJSONBody caps the JSON request bodies (they are a few hundred bytes in practice).
+const maxJSONBody = 64 << 10
+
+// jsonBody reads a small request body. If it is too large or unreadable it answers the request
+// and returns false.
+func jsonBody(w http.ResponseWriter, r *http.Request) (io.Reader, bool) {
+	raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxJSONBody))
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			fail(w, http.StatusRequestEntityTooLarge, "請求內容太大。")
+		} else {
+			fail(w, http.StatusBadRequest, "請求格式不正確。")
+		}
+		return nil, false
+	}
+	return bytes.NewReader(raw), true
 }
 
 func fail(w http.ResponseWriter, status int, message string) {

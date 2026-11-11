@@ -3,12 +3,14 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -185,5 +187,57 @@ func TestSaveAnnotation(t *testing.T) {
 	got, err := songs.ReadFile(r.Songs.AnnotatedPath(id))
 	if err != nil || got.Lines[0].TranslationZh == nil || *got.Lines[0].TranslationZh != "A" {
 		t.Errorf("annotated = %+v, err = %v", got, err)
+	}
+}
+
+func TestShutdownCancelsJobs(t *testing.T) {
+	started := make(chan struct{})
+	client := func(ctx context.Context) (*genai.Client, error) {
+		close(started)
+		<-ctx.Done() // a job stuck on the network until it is cancelled
+		return nil, ctx.Err()
+	}
+	r := NewRunner(songs.Store{Dir: t.TempDir()}, DefaultModel, client)
+	if _, err := r.AddSong("dQw4w9WgXcQ"); err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	begin := time.Now()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r.Cancel()
+	r.Wait(ctx)
+	if time.Since(begin) > 2*time.Second || ctx.Err() != nil {
+		t.Errorf("shutdown took %v", time.Since(begin))
+	}
+	if st := r.Status("dQw4w9WgXcQ"); st == nil || st.Stage != StageError {
+		t.Errorf("status = %+v, want error", st)
+	}
+}
+
+func TestAddSongTwiceStartsOneJob(t *testing.T) {
+	var calls atomic.Int32
+	release := make(chan struct{})
+	client := func(ctx context.Context) (*genai.Client, error) {
+		calls.Add(1)
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return nil, errors.New("stop")
+	}
+	r := NewRunner(songs.Store{Dir: t.TempDir()}, DefaultModel, client)
+	var wg sync.WaitGroup
+	for range 10 {
+		wg.Add(1)
+		go func() { defer wg.Done(); r.AddSong("dQw4w9WgXcQ") }()
+	}
+	wg.Wait()
+	close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	r.Wait(ctx)
+	if calls.Load() != 1 {
+		t.Errorf("jobs started = %d, want 1", calls.Load())
 	}
 }

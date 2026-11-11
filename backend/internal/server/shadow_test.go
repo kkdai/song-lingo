@@ -110,3 +110,19 @@ func TestShadowQuotaStopsCalls(t *testing.T) {
 		t.Errorf("%d %s, %d calls", rec.Code, rec.Body, fake.calls)
 	}
 }
+
+func TestShadowOversizedUploadIs413(t *testing.T) {
+	s, _ := newTestServer(t)
+	ft := &fakeTranscriber{text: "x"}
+	s.shadow = ft
+	if rec := postRecording(t, s, "0", "audio/webm", maxRecordingBytes+2*1024*1024); rec.Code != 413 {
+		t.Errorf("status = %d %s", rec.Code, rec.Body)
+	}
+	if ft.calls != 0 {
+		t.Error("transcribed an oversized upload")
+	}
+	// The gate was never taken, so a normal upload right after works.
+	if rec := postRecording(t, s, "0", "audio/webm", 2000); rec.Code != 200 {
+		t.Errorf("next upload: %d %s", rec.Code, rec.Body)
+	}
+}
