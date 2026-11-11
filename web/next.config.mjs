@@ -1,7 +1,8 @@
-import type { NextConfig } from "next";
-import { BACKEND_URL } from "./lib/backend";
+const BACKEND_URL = process.env.BACKEND_URL ?? "http://127.0.0.1:8081";
 
-const nextConfig: NextConfig = {
+/** @type {import("next").NextConfig} */
+const nextConfig = {
+  output: "standalone",
   // Allow opening the dev server via this Mac's LAN IP (e.g. from a phone on the same network).
   allowedDevOrigins: ["192.168.50.9"],
   // Every /api/* request without a route here goes to the Go API (backend/). It runs after
