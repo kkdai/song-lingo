@@ -224,6 +224,16 @@ func (s *Service) withSlot(ctx context.Context, fn func() ([]byte, error)) ([]by
 	}
 }
 
+// OpenCached opens a clip that is already generated, for serving straight from disk. The caller
+// closes the file. ok is false for an invalid name or a clip not generated yet.
+func (s *Service) OpenCached(videoID, file string) (f *os.File, ok bool) {
+	if !s.IsClipName(file) || !songs.IsVideoID(videoID) {
+		return nil, false
+	}
+	f, err := os.Open(filepath.Join(s.Songs.AudioDir(videoID), file))
+	return f, err == nil
+}
+
 // Clip returns a teacher clip, generating and caching it on first request.
 func (s *Service) Clip(ctx context.Context, videoID, file string) ([]byte, error) {
 	m := s.clipFile.FindStringSubmatch(file)

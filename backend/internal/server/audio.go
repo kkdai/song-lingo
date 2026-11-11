@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"errors"
+	"io"
 	"net/http"
 	"time"
 
@@ -27,6 +28,16 @@ func (s *Server) audio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// A generated clip is served from disk, with its modtime; ServeContent answers byte-range
+	// requests, which Safari needs to play media.
+	if f, ok := s.tts.OpenCached(id, file); ok {
+		defer f.Close()
+		if info, err := f.Stat(); err == nil {
+			serveClip(w, r, file, info.ModTime(), f)
+			return
+		}
+	}
+
 	data, err := s.tts.Clip(r.Context(), id, file)
 	if err != nil {
 		var e *tts.Error
@@ -41,8 +52,13 @@ func (s *Server) audio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	serveClip(w, r, file, time.Now(), bytes.NewReader(data))
+}
+
+// serveClip sends a WAV clip; only successful responses are cacheable, so the headers are set here
+// and not before generation may fail.
+func serveClip(w http.ResponseWriter, r *http.Request, name string, modTime time.Time, content io.ReadSeeker) {
 	w.Header().Set("Content-Type", "audio/wav")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
-	// ServeContent answers byte-range requests, which Safari needs to play media.
-	http.ServeContent(w, r, file, time.Time{}, bytes.NewReader(data))
+	http.ServeContent(w, r, name, modTime, content)
 }

@@ -15,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 
 	"github.com/kkdai/song-lingo/backend/internal/config"
 	"github.com/kkdai/song-lingo/backend/internal/pipeline"
@@ -156,32 +157,57 @@ type songSummary struct {
 	Progress    progress.Summary `json:"progress"`
 }
 
+// listConcurrency bounds the songs read at once by listSongs.
+const listConcurrency = 8
+
+// summarize reads one song for the list; nil when its file is unreadable. A progress read that
+// fails shows the song with empty progress rather than failing the whole list.
+func (s *Server) summarize(ctx context.Context, id string) *songSummary {
+	song, err := s.songs.Read(id)
+	if err != nil {
+		return nil // a half-written or broken file shouldn't hide the other songs
+	}
+	p, err := s.progress.Read(ctx, id)
+	if err != nil {
+		log.Printf("[api] list: progress for %s: %v", id, err)
+		p = progress.Empty()
+	}
+	return &songSummary{
+		ID:          id,
+		Language:    song.Language,
+		TitleGuess:  song.TitleGuess,
+		ArtistGuess: song.ArtistGuess,
+		LineCount:   len(song.Lines),
+		HasTeacher:  s.cfg.HasTeacher(song.Language),
+		Progress:    progress.Summarize(p, song.Lines),
+	}
+}
+
 func (s *Server) listSongs(w http.ResponseWriter, r *http.Request) {
 	ids, err := s.songs.IDs()
 	if err != nil {
 		internalError(w, r, err)
 		return
 	}
+	// Songs are read concurrently (one progress read per song is a network call on Firestore);
+	// each result goes to its own slot, so the order stays that of ids.
+	results := make([]*songSummary, len(ids))
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, listConcurrency)
+	for i, id := range ids {
+		wg.Add(1)
+		sem <- struct{}{}
+		go func() {
+			defer func() { <-sem; wg.Done() }()
+			results[i] = s.summarize(r.Context(), id)
+		}()
+	}
+	wg.Wait()
 	summaries := []songSummary{}
-	for _, id := range ids {
-		song, err := s.songs.Read(id)
-		if err != nil {
-			continue // a half-written or broken file shouldn't hide the other songs
+	for _, summary := range results {
+		if summary != nil {
+			summaries = append(summaries, *summary)
 		}
-		p, err := s.progress.Read(r.Context(), id)
-		if err != nil {
-			internalError(w, r, err)
-			return
-		}
-		summaries = append(summaries, songSummary{
-			ID:          id,
-			Language:    song.Language,
-			TitleGuess:  song.TitleGuess,
-			ArtistGuess: song.ArtistGuess,
-			LineCount:   len(song.Lines),
-			HasTeacher:  s.cfg.HasTeacher(song.Language),
-			Progress:    progress.Summarize(p, song.Lines),
-		})
 	}
 	// Most recently studied first; songs never opened keep their order at the end.
 	studied := func(i int) string {
